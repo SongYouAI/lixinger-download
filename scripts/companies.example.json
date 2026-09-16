@@ -1,0 +1,14 @@
+{
+  "_说明": "批量下载公司清单模板。复制为 companies.json 后按需修改。市场代码: sh=沪市, sz=深市, hk=港股。",
+  "dest": "/Volumes/KIOXIA/理杏仁下载",
+  "years": 10,
+  "companies": [
+    { "name": "长江电力", "market": "sh", "code": "600900", "_note": "已验证通过（样板）" },
+    { "name": "贵州茅台", "market": "sh", "code": "600519" },
+    { "name": "牧原股份", "market": "sz", "code": "002714" },
+    { "name": "腾讯控股", "market": "hk", "code": "00700" },
+    { "name": "片仔癀", "market": "sh", "code": "600436" },
+    { "name": "东阿阿胶", "market": "sz", "code": "000423" }
+  ],
+  "_批量执行示例": "jq -r '.companies[] | \"\\(.name) \\(.market) \\(.code)\"' companies.json | while read n m c; do bash download_company.sh --name \"$n\" --market \"$m\" --code \"$c\" --dest /path --years 10; done"
+}
