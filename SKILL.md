@@ -107,8 +107,11 @@ https://www.lixinger.com/analytics/company/detail/{market}/{code}/{code}/{ticker
 | `operation-revenue-constitution` | 营收构成 |
 | `operating-data` | 经营数据 |
 | `employee/all-employee` | 员工数据（全体员工） |
+| `announcement?search-key=年度报告` | 公告筛选页（**年报 PDF 在这里**） |
 
 **导出三连**：点「导出CSV」→ 选「壹」→ 点「时间横排 - 降序」→ 自动下载
+
+> ⚠️ **例外**：经营数据(`operating-data`) 弹窗**没有「壹」单位选项**（该表单位固定）。若卡在"找不到单位"直接跳过选单位、点排序即可下载。
 
 ---
 
@@ -129,4 +132,5 @@ https://www.lixinger.com/analytics/company/detail/{market}/{code}/{code}/{ticker
 
 - **员工数据**：理杏仁该页 UI 导出按钮在自动化下不触发下载，脚本用 **DOM 提取表格 + 本地生成 CSV** 兜底（数据内容一致，格式为「指标 × 年份」矩阵，与官方导出格式略有差异）
 - **QQ 浏览器通道**为实测验证路径；Chrome + Playwright 为备选路径（见环境文档，需自行调试）
-- 年报 PDF 依赖页面上的年报链接（通常可见最近 10 年），更早年份需另行寻找
+- 年报 PDF 从「**公告**」筛选页（`announcement?search-key=年度报告`，关键词需 URL 编码）精确匹配获取，通常可见最近 10 年，更早年份需另行寻找
+  - ⚠️ 年报链接**不在**员工页 / 经营数据页（那些页面只有临时公告），从错误页面 grep 必然 0 命中

@@ -51,10 +51,13 @@ fi
 
 # ---------- 日期范围（跨平台）----------
 if [ "$(uname -s)" = "Darwin" ]; then
+  IS_MAC=1
   START_DATE=$(date -v-${YEARS}y +%Y-%m-%d)
 else
+  IS_MAC=0
   START_DATE=$(date -d "${YEARS} years ago" +%Y-%m-%d)
 fi
+SESSION_START=$(date +%s)   # 用于收尾时精准清理"本次产生的"临时文件
 END_DATE=$(date +%Y-%m-%d)
 QUERY="fs-owner-type=consolidated&start-date=${START_DATE}&end-date=${END_DATE}"
 PREFIX="${BASE}/${MARKET}/${CODE}/${CODE}"
@@ -65,6 +68,9 @@ mkdir -p "$COMPANY_DIR" "$PDF_DIR"
 
 # ---------- 工具函数 ----------
 log()  { echo "$1"; }
+escape_re() {  # 转义正则元字符, 让公司名可安全用于 grep -E(防 ( ) . * 等注入)
+  printf '%s' "$1" | sed 's/[][\.*^$()+?{}|]/\\&/g'
+}
 snap_new_file() {  # $1=匹配通配符, 输出新增的第一个文件 basename
   local pattern="$1"; local before after
   before=$(ls "$DOWNLOADS" 2>/dev/null | grep -iE "$pattern" | sort)
@@ -79,12 +85,18 @@ take_new_file() {  # 与 snap_new_file 配对, 输出新增文件
 archive() {  # $1=源文件名(basename) $2=目标完整路径
   local src="$DOWNLOADS/$1"; local dst="$2"
   if [ -f "$src" ]; then
-    cp "$src" "$dst" && rm "$src" && return 0
+    # macOS 用 -X 不带扩展属性复制, 避免在 exFAT 等外置盘生成 ._ 伴生垃圾文件
+    if [ "$IS_MAC" = "1" ]; then
+      cp -X "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
+    else
+      cp "$src" "$dst"
+    fi
+    if [ -f "$dst" ]; then rm -f "$src"; return 0; fi
   fi
   return 1
 }
 
-OK_COUNT=0; FAIL_LIST=""
+OK_COUNT=0; FAIL_LIST=""; NO_DATA_LIST=""
 
 echo "=========================================="
 echo " 理杏仁下载: $NAME ($MARKET$CODE)"
@@ -92,10 +104,17 @@ echo " 时间范围: $START_DATE ~ $END_DATE (${YEARS}年)"
 echo " 输出目录: $COMPANY_DIR"
 echo "=========================================="
 
+# ---------- 公司名正则转义 ----------
+NAME_RE=$(escape_re "$NAME")
+
 # ---------- 开会话 ----------
+# 任何异常退出都关会话, 防浏览器 tab 泄漏
+cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
+
 "$CLI" browser_start_session --sessionId "$SID" --title "$NAME财报" --color green \
   --initialUrl "${PREFIX}/bs?${QUERY}" >/dev/null 2>&1
 "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
+trap cleanup EXIT INT TERM
 log "✅ 会话已开启"
 
 # ============================================================
@@ -107,10 +126,18 @@ declare -a LABELS=("资产负债表" "利润表" "现金流量表" "财务指标
 
 for i in "${!TICKERS[@]}"; do
   T="${TICKERS[$i]}"; L="${LABELS[$i]}"
-  echo "───── [$((i+1))/6] $L ($T) ─────"
+  echo "───── [$((i+1))/${#TICKERS[@]}] $L ($T) ─────"
 
   "$CLI" browser_go_to_url --sessionId "$SID" --url "${PREFIX}/${T}?${QUERY}" >/dev/null 2>&1
   "$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
+
+  # 该报表理杏仁是否未收录(部分公司无经营数据等) → 明确跳过, 避免误报成"找不到排序选项"
+  "$CLI" browser_eval_content_js --sessionId "$SID" --script "document.body.innerText" \
+    > /tmp/.lx_pagetext.txt 2>&1
+  if grep -q "无数据" /tmp/.lx_pagetext.txt; then
+    echo "  ⏭️  理杏仁未收录【$L】, 跳过(数据源缺失, 非脚本故障)"
+    NO_DATA_LIST="$NO_DATA_LIST $L"; continue
+  fi
 
   # 打开导出菜单
   "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "导出CSV" --action click >/dev/null 2>&1
@@ -192,8 +219,10 @@ except Exception as e:
     print(f'  ❌ 员工数据提取失败: {e}')
 PY
 
+fi  # SKIP_CSV  ← CSV部分到此结束(PDF独立在后, 故 --skip-csv 不会连带跳过PDF)
+
 # ============================================================
-# 第三部分: 年报 PDF（10年）
+# 第三部分: 年报 PDF（10年）—— 独立于 CSV 部分
 # ============================================================
 if [ "$SKIP_PDF" -eq 0 ]; then
 echo "───── PDF年报下载 ─────"
@@ -211,14 +240,20 @@ ANN_URL="${PREFIX}/announcement?search-key=%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A"
 PDF_LINES=()
 while IFS= read -r line; do
   [ -n "$line" ] && PDF_LINES+=("$line")
-done < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a ${NAME}[0-9]{4}年年度报告/>points to a pdf" /tmp/.lx_annual.txt | sort -u)
+done < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a ${NAME_RE}[0-9]{4}年年度报告/>points to a pdf" /tmp/.lx_annual.txt | sort -u)
 echo "  发现 ${#PDF_LINES[@]} 个年报链接"
 
 START_YEAR=$(( $(date +%Y) - YEARS ))
+# bash 3.2 + set -u 下空数组展开会崩(unbound variable), 必须守卫
+if [ "${#PDF_LINES[@]}" -eq 0 ]; then
+  echo "  ⚠️  公告页未匹配到年报链接, 跳过PDF阶段(不中断后续)"
+else
 for line in "${PDF_LINES[@]}"; do
   IDX=$(echo "$line" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
-  YEAR=$(echo "$line" | grep -oE "${NAME}[0-9]{4}年年度报告" | grep -oE '[0-9]{4}')
-  [ -z "$IDX" ] || [ -z "$YEAR" ] && continue
+  YEAR=$(echo "$line" | grep -oE "${NAME_RE}[0-9]{4}年年度报告" | grep -oE '[0-9]{4}')
+  if [ -z "$IDX" ] || [ -z "$YEAR" ]; then
+    continue
+  fi
   if [ "$YEAR" -lt "$START_YEAR" ]; then
     echo "  ⏭️  ${YEAR}年(超出${YEARS}年范围, 起点${START_YEAR}) 跳过"
     continue
@@ -226,9 +261,13 @@ for line in "${PDF_LINES[@]}"; do
 
   snap_new_file "\.pdf$"
   "$CLI" browser_download_file --sessionId "$SID" --index "$IDX" >/dev/null 2>&1
-  "$CLI" browser_wait --sessionId "$SID" --seconds 7 >/dev/null 2>&1
-
-  NEW=$(take_new_file "\.pdf$")
+  # 轮询等待: 大PDF超过固定等待, 每2s检测一次, 最多20s
+  NEW=""
+  for _w in 1 2 3 4 5 6 7 8 9 10; do
+    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
+    NEW=$(take_new_file "\.pdf$")
+    [ -n "$NEW" ] && break
+  done
   if [ -n "$NEW" ]; then
     if archive "$NEW" "$PDF_DIR/${NAME}_${YEAR}年年度报告.pdf"; then
       echo "  ✅ ${YEAR}年年度报告.pdf"
@@ -240,17 +279,39 @@ for line in "${PDF_LINES[@]}"; do
     echo "  ⚠️  ${YEAR}年 未检测到下载"; FAIL_LIST="$FAIL_LIST PDF${YEAR}"
   fi
 done
+fi  # PDF_LINES 非空守卫
 fi  # SKIP_PDF
-
-fi  # SKIP_CSV
 
 # ---------- 收尾 ----------
 "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1
 
+# 清理1: macOS ._ 伴生垃圾文件(外置盘 cp 产生, 含历史遗留)
+if [ "$IS_MAC" = "1" ] && command -v dot_clean >/dev/null 2>&1; then
+  dot_clean "$COMPANY_DIR" 2>/dev/null
+fi
+
+# 清理2: 本次下载在下载目录产生的 .crdownload 临时残留(按会话起始时间精准删, 不误删其他文件)
+if command -v python3 >/dev/null 2>&1; then
+python3 - "$DOWNLOADS" "$SESSION_START" <<'PY'
+import os, sys, glob
+d, start = sys.argv[1], int(sys.argv[2])
+n = 0
+for f in glob.glob(os.path.join(d, "*.crdownload")):
+    try:
+        if os.path.getmtime(f) >= start - 5:
+            os.remove(f); n += 1
+    except Exception:
+        pass
+if n:
+    print(f"  🧹 清理下载临时残留 {n} 个")
+PY
+fi
+
 echo "=========================================="
 echo " 完成: $NAME"
 echo " 成功 $OK_COUNT 个文件"
-[ -n "$FAIL_LIST" ] && echo " 失败项:$FAIL_LIST"
+[ -n "$FAIL_LIST" ] && echo " ❌失败项:$FAIL_LIST"
+[ -n "$NO_DATA_LIST" ] && echo " ⏭️理杏仁未收录(数据源缺失,非故障):$NO_DATA_LIST"
 echo " 目录: $COMPANY_DIR"
 echo "   PDF: $(ls -1 "$PDF_DIR" 2>/dev/null | wc -l | tr -d ' ') 个"
 echo "   CSV: $(ls -1 "$COMPANY_DIR"/*.csv 2>/dev/null | wc -l | tr -d ' ') 个"
