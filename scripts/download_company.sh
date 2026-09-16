@@ -71,6 +71,23 @@ log()  { echo "$1"; }
 escape_re() {  # 转义正则元字符, 让公司名可安全用于 grep -E(防 ( ) . * 等注入)
   printf '%s' "$1" | sed 's/[][\.*^$()+?{}|]/\\&/g'
 }
+# 判定报表页是否"无数据": 只看「数据选项」锚点后 300 字
+# 不能全文 grep "无数据" —— 页面他处(导航栏/指标说明)出现该词会误判整张表未收录
+page_no_data() {
+  python3 - <<'PY' 2>/dev/null
+import json, re
+seg = ''
+try:
+    raw = open('/tmp/.lx_pagetext.txt', encoding='utf-8', errors='replace').read()
+    m = re.search(r'"text":\s*"((?:[^"\\]|\\.)*)"', raw, re.S)
+    t = json.loads('"' + m.group(1) + '"') if m else ''
+    i = t.find('数据选项')
+    seg = t[i:i+300] if i >= 0 else ''
+except Exception:
+    pass
+raise SystemExit(0 if '无数据' in seg else 1)
+PY
+}
 snap_new_file() {  # $1=匹配通配符, 输出新增的第一个文件 basename
   local pattern="$1"; local before after
   before=$(ls "$DOWNLOADS" 2>/dev/null | grep -iE "$pattern" | sort)
@@ -134,7 +151,7 @@ for i in "${!TICKERS[@]}"; do
   # 该报表理杏仁是否未收录(部分公司无经营数据等) → 明确跳过, 避免误报成"找不到排序选项"
   "$CLI" browser_eval_content_js --sessionId "$SID" --script "document.body.innerText" \
     > /tmp/.lx_pagetext.txt 2>&1
-  if grep -q "无数据" /tmp/.lx_pagetext.txt; then
+  if page_no_data; then
     echo "  ⏭️  理杏仁未收录【$L】, 跳过(数据源缺失, 非脚本故障)"
     NO_DATA_LIST="$NO_DATA_LIST $L"; continue
   fi
@@ -171,13 +188,12 @@ for i in "${!TICKERS[@]}"; do
 
   NEW=$(take_new_file "\.csv$")
   if [ -n "$NEW" ]; then
-    TS=$(date +%Y%m%d_%H%M%S)
     # 保留理杏仁原文件名（含报表名），补公司前缀（若缺失）
-    if [[ "$NEW" == ${NAME}* ]]; then
-      FINAL="$NEW"
-    else
-      FINAL="${NAME}_${NEW}"
-    fi
+    # 用 case 而非 [[ x == ${NAME}* ]], 避免公司名含 glob 元字符时被当通配符
+    case "$NEW" in
+      "${NAME}"*) FINAL="$NEW";;
+      *)          FINAL="${NAME}_${NEW}";;
+    esac
     if archive "$NEW" "$COMPANY_DIR/$FINAL"; then
       echo "  ✅ $FINAL"
       OK_COUNT=$((OK_COUNT+1))
@@ -196,10 +212,12 @@ echo "───── [7/7] 员工数据 (DOM提取) ─────"
 "$CLI" browser_go_to_url --sessionId "$SID" --url "${PREFIX}/employee/all-employee?${QUERY}" >/dev/null 2>&1
 "$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
 
+# 取"行数最多"的表格, 不硬编码 table[1](不同公司页面表格数量可能不同)
 "$CLI" browser_eval_content_js --sessionId "$SID" --script \
-"JSON.stringify(Array.from(document.querySelectorAll('table')[1].querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('td,th')).map(td=>td.innerText.trim())))" \
+"JSON.stringify((function(){var ts=Array.from(document.querySelectorAll('table'));var best=null,bestN=0;for(var i=0;i<ts.length;i++){var n=ts[i].querySelectorAll('tr').length;if(n>bestN){bestN=n;best=ts[i];}}var tb=best||ts[1];return Array.from(tb.querySelectorAll('tr')).map(function(tr){return Array.from(tr.querySelectorAll('td,th')).map(function(td){return td.innerText.trim()})})})())" \
 > /tmp/.lx_emp_raw.txt 2>&1
 
+rm -f /tmp/.lx_emp_fail
 python3 - "$NAME" "$COMPANY_DIR" <<'PY'
 import json, csv, sys, os, datetime
 name, outdir = sys.argv[1], sys.argv[2]
@@ -217,7 +235,13 @@ try:
     print(f'  ✅ {os.path.basename(out)}  ({len(rows)}个指标 × {len(years)}年)')
 except Exception as e:
     print(f'  ❌ 员工数据提取失败: {e}')
+    open('/tmp/.lx_emp_fail','w').write('1')
 PY
+# 员工数据失败要计入统计, 不能静默(否则最终报告显示"成功"但文件缺失)
+if [ -f /tmp/.lx_emp_fail ]; then
+  rm -f /tmp/.lx_emp_fail
+  FAIL_LIST="$FAIL_LIST 员工数据"
+fi
 
 fi  # SKIP_CSV  ← CSV部分到此结束(PDF独立在后, 故 --skip-csv 不会连带跳过PDF)
 
@@ -285,25 +309,29 @@ fi  # SKIP_PDF
 # ---------- 收尾 ----------
 "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1
 
-# 清理1: macOS ._ 伴生垃圾文件(外置盘 cp 产生, 含历史遗留)
-if [ "$IS_MAC" = "1" ] && command -v dot_clean >/dev/null 2>&1; then
-  dot_clean "$COMPANY_DIR" 2>/dev/null
-fi
-
-# 清理2: 本次下载在下载目录产生的 .crdownload 临时残留(按会话起始时间精准删, 不误删其他文件)
+# 收尾清理: ①目标目录 ._ AppleDouble 垃圾文件  ②下载目录本次产生的 .crdownload 临时残留
+# ⚠️ 用自带 python 删除, 不用 dot_clean —— dot_clean 是外部二进制, 沙箱下会被拦截(unlink 被拒)
 if command -v python3 >/dev/null 2>&1; then
-python3 - "$DOWNLOADS" "$SESSION_START" <<'PY'
+python3 - "$COMPANY_DIR" "$DOWNLOADS" "$SESSION_START" <<'PY'
 import os, sys, glob
-d, start = sys.argv[1], int(sys.argv[2])
-n = 0
-for f in glob.glob(os.path.join(d, "*.crdownload")):
+cdir, ddir, start = sys.argv[1], sys.argv[2], int(sys.argv[3])
+n1 = 0
+for root, dirs, files in os.walk(cdir):
+    for nm in list(files) + list(dirs):
+        if nm.startswith('._'):
+            try:
+                os.remove(os.path.join(root, nm)); n1 += 1
+            except Exception:
+                pass
+n2 = 0
+for f in glob.glob(os.path.join(ddir, '*.crdownload')):
     try:
         if os.path.getmtime(f) >= start - 5:
-            os.remove(f); n += 1
+            os.remove(f); n2 += 1
     except Exception:
         pass
-if n:
-    print(f"  🧹 清理下载临时残留 {n} 个")
+if n1: print(f'  🧹 清理 ._ 垃圾文件 {n1} 个')
+if n2: print(f'  🧹 清理下载临时残留 {n2} 个')
 PY
 fi
 
