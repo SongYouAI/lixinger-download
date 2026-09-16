@@ -54,7 +54,9 @@
 | `mv: EXDEV: cross-device link not permitted` | 跨设备移动（内置盘 → 外置盘） | 用 `cp` + `rm` 代替 `mv` |
 | 下载目录找不到新文件 | 下载未完成（`.crdownload` 暂存中） | 增加等待时间；确认 `.crdownload` 是否已转为正式文件 |
 | **年报 PDF 一个都没下到（0 个）** | 从员工页 / 经营数据页 grep 年报 —— 那些页面**根本没有年报链接**（只有临时公告） | 去「**公告**」筛选页：`announcement?search-key=%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A`（"年度报告"URL 编码），再精确匹配 `{公司}{YYYY}年年度报告/>points to a pdf`；懒加载需先 `browser_scroll_to_bottom` |
-| 只下 CSV 时 PDF 也没下 | PDF 块被嵌在 `SKIP_CSV` 块内，被连带跳过（结构 bug，已修） | PDF 块必须与 CSV 块**平级独立** |
+| **年报 PDF 数量少于预期（漏年份）** | `browser_snapshot` **只捕获视口内**元素；单次 `scroll_to_bottom` 后视口停在页面底部，**顶部/中间的年报会漏** | 分段 JS 滚动 `window.scrollTo(0,N)` + **多次 snapshot 用 `>>` 追加合并**，再按年份去重 |
+| CSV 偶发 `未检测到下载` | 固定等 6 秒，网络慢时不够 | 改**轮询**等待（每 2s 检测，最多 16s），与 PDF 逻辑一致 |
+| 同一年报被重复下载 | 多屏采集时同一条目在多个视口重复出现，整行去重可能因 index 变化失效 | 用 `DONE_YEARS` **按年份去重** |
 
 ---
 

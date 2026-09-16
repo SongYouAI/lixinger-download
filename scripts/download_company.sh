@@ -184,9 +184,13 @@ for i in "${!TICKERS[@]}"; do
     "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
     "$CLI" browser_click_element --sessionId "$SID" --index "$I2" >/dev/null 2>&1
   fi
-  "$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
-
-  NEW=$(take_new_file "\.csv$")
+  # 轮询等待(与PDF一致): 固定等6s在网络慢时会误判"未检测到下载"
+  NEW=""
+  for _c in 1 2 3 4 5 6 7 8; do
+    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
+    NEW=$(take_new_file "\.csv$")
+    [ -n "$NEW" ] && break
+  done
   if [ -n "$NEW" ]; then
     # 保留理杏仁原文件名（含报表名），补公司前缀（若缺失）
     # 用 case 而非 [[ x == ${NAME}* ]], 避免公司名含 glob 元字符时被当通配符
@@ -255,16 +259,27 @@ echo "───── PDF年报下载 ─────"
 ANN_URL="${PREFIX}/announcement?search-key=%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A"
 "$CLI" browser_go_to_url --sessionId "$SID" --url "$ANN_URL" >/dev/null 2>&1
 "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
-# 滚动兜底, 确保懒加载出全部年报
-"$CLI" browser_scroll_to_bottom --sessionId "$SID" >/dev/null 2>&1
+# 分段滚动 + 多次快照合并:
+# snapshot 只捕获"视口内"元素, 单次滚到底会让视口停在页面底部,
+# 顶部/中间的年报就会漏掉(年报条目多的公司必踩) → 必须分段滚动逐屏采集
+"$CLI" browser_scroll_to_bottom --sessionId "$SID" >/dev/null 2>&1  # 先触发懒加载
 "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-"$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_annual.txt 2>&1
+: > /tmp/.lx_annual.txt
+for _pos in 0 700 1400 2100 2800 3500 4200 4900; do
+  "$CLI" browser_eval_content_js --sessionId "$SID" \
+    --script "window.scrollTo(0,${_pos});'ok'" >/dev/null 2>&1
+  "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
+  "$CLI" browser_snapshot --sessionId "$SID" >> /tmp/.lx_annual.txt 2>&1
+done
 
 # 精确匹配: 公司名+YYYY年年度报告 (排除"摘要"/"半年度")
 PDF_LINES=()
 while IFS= read -r line; do
   [ -n "$line" ] && PDF_LINES+=("$line")
-done < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a ${NAME_RE}[0-9]{4}年年度报告/>points to a pdf" /tmp/.lx_annual.txt | sort -u)
+# 兼容简称/全称混用: 同一公司不同年份的公告标题可能用简称(中国核电)也可能用全称(中国核能电力股份有限公司),
+# 故公司名部分用 [^/>]* 通配, 不能写死 ${NAME} —— 否则全称标题的年份会整年漏掉(实测漏 2021/2022/2024)
+# 靠 "YYYY年年度报告/>points to a pdf"(紧邻 />) 同时排除「摘要」与「半年度报告」
+done < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}年年度报告/>points to a pdf" /tmp/.lx_annual.txt | sort -u)
 echo "  发现 ${#PDF_LINES[@]} 个年报链接"
 
 START_YEAR=$(( $(date +%Y) - YEARS ))
@@ -272,12 +287,18 @@ START_YEAR=$(( $(date +%Y) - YEARS ))
 if [ "${#PDF_LINES[@]}" -eq 0 ]; then
   echo "  ⚠️  公告页未匹配到年报链接, 跳过PDF阶段(不中断后续)"
 else
+DONE_YEARS=""
 for line in "${PDF_LINES[@]}"; do
   IDX=$(echo "$line" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
-  YEAR=$(echo "$line" | grep -oE "${NAME_RE}[0-9]{4}年年度报告" | grep -oE '[0-9]{4}')
+  YEAR=$(echo "$line" | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}')
   if [ -z "$IDX" ] || [ -z "$YEAR" ]; then
     continue
   fi
+  # 按年份去重: 多屏采集时同一年报可能在多个视口重复出现
+  case " $DONE_YEARS " in
+    *" $YEAR "*) continue;;
+  esac
+  DONE_YEARS="$DONE_YEARS $YEAR"
   if [ "$YEAR" -lt "$START_YEAR" ]; then
     echo "  ⏭️  ${YEAR}年(超出${YEARS}年范围, 起点${START_YEAR}) 跳过"
     continue
