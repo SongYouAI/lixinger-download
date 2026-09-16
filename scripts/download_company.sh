@@ -121,15 +121,25 @@ for i in "${!TICKERS[@]}"; do
   I1=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<input 壹' /tmp/.lx_pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
   I2=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<a 时间横排 - 降序' /tmp/.lx_pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
 
-  if [ -z "$I1" ] || [ -z "$I2" ]; then
-    echo "  ❌ 未找到导出选项(index 缺失)，跳过"
+  if [ -z "$I2" ]; then
+    echo "  ❌ 未找到排序选项(时间横排-降序)，跳过"
     FAIL_LIST="$FAIL_LIST $L"; continue
   fi
 
   snap_new_file "\.csv$"
-  "$CLI" browser_click_element --sessionId "$SID" --index "$I1" >/dev/null 2>&1
-  "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
-  "$CLI" browser_click_element --sessionId "$SID" --index "$I2" >/dev/null 2>&1
+  if [ "$T" = "operating-data" ]; then
+    # 经营数据弹窗无「壹」单位选项(单位固定)，直接点排序即触发下载
+    [ -z "$I1" ] && echo "  (经营数据无需选单位, 直接导出)"
+    "$CLI" browser_click_element --sessionId "$SID" --index "$I2" >/dev/null 2>&1
+  else
+    if [ -z "$I1" ]; then
+      echo "  ❌ 未找到单位选项(壹)，跳过"
+      FAIL_LIST="$FAIL_LIST $L"; continue
+    fi
+    "$CLI" browser_click_element --sessionId "$SID" --index "$I1" >/dev/null 2>&1
+    "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
+    "$CLI" browser_click_element --sessionId "$SID" --index "$I2" >/dev/null 2>&1
+  fi
   "$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
 
   NEW=$(take_new_file "\.csv$")
@@ -187,18 +197,32 @@ PY
 # ============================================================
 if [ "$SKIP_PDF" -eq 0 ]; then
 echo "───── PDF年报下载 ─────"
-# 年报链接在员工页可见
-"$CLI" browser_go_to_url --sessionId "$SID" --url "${PREFIX}/employee/all-employee" >/dev/null 2>&1
-"$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
+# 年报在「公告」页: 用 search-key 筛选年度报告(排除摘要/半年度/季报)
+# 注意: 员工页/经营数据页快照里只有各类临时公告, 不含年度报告, 必须用公告筛选页
+ANN_URL="${PREFIX}/announcement?search-key=%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A"
+"$CLI" browser_go_to_url --sessionId "$SID" --url "$ANN_URL" >/dev/null 2>&1
+"$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
+# 滚动兜底, 确保懒加载出全部年报
+"$CLI" browser_scroll_to_bottom --sessionId "$SID" >/dev/null 2>&1
+"$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
 "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_annual.txt 2>&1
 
-mapfile -t PDF_LINES < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a ${NAME}[0-9]{4}年年度报告" /tmp/.lx_annual.txt | sort -u)
+# 精确匹配: 公司名+YYYY年年度报告 (排除"摘要"/"半年度")
+PDF_LINES=()
+while IFS= read -r line; do
+  [ -n "$line" ] && PDF_LINES+=("$line")
+done < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a ${NAME}[0-9]{4}年年度报告/>points to a pdf" /tmp/.lx_annual.txt | sort -u)
 echo "  发现 ${#PDF_LINES[@]} 个年报链接"
 
+START_YEAR=$(( $(date +%Y) - YEARS ))
 for line in "${PDF_LINES[@]}"; do
   IDX=$(echo "$line" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
-  YEAR=$(echo "$line" | grep -oE '[0-9]{4}年年度报告' | grep -oE '^[0-9]{4}')
+  YEAR=$(echo "$line" | grep -oE "${NAME}[0-9]{4}年年度报告" | grep -oE '[0-9]{4}')
   [ -z "$IDX" ] || [ -z "$YEAR" ] && continue
+  if [ "$YEAR" -lt "$START_YEAR" ]; then
+    echo "  ⏭️  ${YEAR}年(超出${YEARS}年范围, 起点${START_YEAR}) 跳过"
+    continue
+  fi
 
   snap_new_file "\.pdf$"
   "$CLI" browser_download_file --sessionId "$SID" --index "$IDX" >/dev/null 2>&1
