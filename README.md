@@ -1,10 +1,10 @@
 # 理杏仁财报批量下载
 
-> **一句话**：告诉它公司名，它自动从 [理杏仁](https://www.lixinger.com) 把这家公司的 **7 类财报 CSV（10 年）+ 10 年 PDF 年报** 全套下载好，按「公司 / 年报PDF」规范归档。**无人值守、全程免费。**
+> **一句话**：告诉它公司名，它自动从 [理杏仁](https://www.lixinger.com) 把这家公司的 **7 类财报 CSV（10 年）+ 10 年 PDF 年报 + IPO 招股/发行文件** 全套下载好，按「公司 / 年报PDF / 招股资料」规范归档。**无人值守、全程免费。**
 
 一个把「重复下载财报」这件苦力活沉淀成资产的 WorkBuddy Skill。驱动**你已登录理杏仁的 QQ 浏览器**，复用真实登录态，模拟人工完成「翻页 → 导出 → 归档」全流程。
 
-> 本 Skill 的所有流程与坑位均来自**真机实测**（macOS + QQ 浏览器 + 长江电力完整跑通），不是纸上方案。
+> 本 Skill 的所有流程与坑位均来自**真机实测**（macOS + QQ 浏览器；长江电力单家跑通 + **17 家电力公司批量验证**），不是纸上方案。
 
 ---
 
@@ -16,19 +16,24 @@
 | **其他 Agent** | **兼容**。`SKILL.md` 为标准 Agent Skill 格式，Claude Code / Cline 等支持 `SKILL.md` 约定的 Agent 均可加载；脚本为纯 Bash + Python，跨 macOS / Windows / Linux |
 | **给谁用** | 需要**批量下载上市公司财报**做分析的价值投资者、财务研究者、投研从业者 |
 | **输入** | 公司名 + 股票代码（市场段 `sh`/`sz`/`hk`） |
-| **产物** | 每家公司一个文件夹：7 类 CSV（资产负债表/利润表/现金流量表/财务指标/营收构成/经营数据/员工数据，均 10 年）+ `年报PDF/` 下 10 份年报 |
+| **产物** | 每家公司一个文件夹：7 类 CSV（资产负债表/利润表/现金流量表/财务指标/营收构成/经营数据/员工数据，均 10 年）+ `年报PDF/` 下 10 份年报 + `招股资料/` 下 IPO 全套发行文件 |
 | **成本** | **0 元**。全程用本地已登录浏览器 + 开源工具，不接任何付费 API |
 | **不是** | 不是爬虫集群、不是云端服务、不绕过任何会员权限（用你自己的理杏仁账号看你能看的数据） |
 
 ---
 
-## ✨ 每家公司的标准产出（8 类）
+## ✨ 每家公司的标准产出
 
 ```
 {目标目录}/{公司}/
-├── 年报PDF/                                  ← PDF 单独子层，整齐
+├── 年报PDF/                                  ← 年报 PDF 单独子层
 │   ├── {公司}_2016年年度报告.pdf
 │   └── …（共 10 年）
+├── 招股资料/                                 ← IPO/发行文件单独子层
+│   ├── {公司}_招股意向书.pdf
+│   ├── {公司}_招股意向书附录.pdf
+│   ├── {公司}_招股说明书.pdf
+│   └── …（发行公告 / 保荐书 / 法律意见书 / 上市公告书等）
 ├── {公司}_资产负债表_合并报表_*.csv           ← 10 年
 ├── {公司}_利润表_合并报表_*.csv
 ├── {公司}_现金流量表_合并报表_*.csv
@@ -40,6 +45,8 @@
 
 **文件命名**：所有文件强制带**公司名前缀**——理杏仁原始名（如 `600900_20260430_WC8R.pdf`）完全不可读，Skill 会自动重命名。
 
+> ⚠️ **根目录只放 CSV**。任何 PDF 都必须进 `年报PDF/` 或 `招股资料/` 子层，否则一家公司几十个文件散在根目录会非常乱。
+
 ---
 
 ## 🎯 触发场景
@@ -47,6 +54,7 @@
 ```
 下载 XX 公司的理杏仁财报 / 批量导出理杏仁财报 Excel / 自动下载年报 PDF
 把 XX 的十年财报全下载下来 / 理杏仁财报批量抓取
+下载 XX 的招股说明书 / 招股意向书 / IPO 发行文件
 ```
 
 **用法示例**：
@@ -95,16 +103,29 @@ bash scripts/download_company.sh \
   --dest "/Volumes/KIOXIA/理杏仁下载" --years 10
 ```
 
-### 批量下载
-
-编辑公司清单（模板见 [`scripts/companies.example.json`](scripts/companies.example.json)）后循环调用：
+### 批量下载（推荐：一条命令）
 
 ```bash
-jq -r '.companies[] | "\(.name) \(.market) \(.code)"' companies.json | \
-while read n m c; do
-  bash scripts/download_company.sh --name "$n" --market "$m" --code "$c" --dest /path --years 10
-done
+# 准备清单文件 companies.txt，每行一条：公司名|market|code（# 开头为注释）
+#   华能国际|sh|600011
+#   龙源电力|hk|00916
+bash scripts/batch_download.sh --list companies.txt \
+  --dest "/Volumes/KIOXIA/理杏仁下载" --years 10
 ```
+
+串行执行（浏览器单客户端，并行会抢会话），单家 5~7 分钟；日志落 `/tmp/lx_batch_*.log`，
+每家跑完即时打印失败项，不用等全跑完才发现前面全废。
+
+<details>
+<summary>手工循环版（想自己控制时用）</summary>
+
+```bash
+while IFS='|' read -r n m c; do
+  bash scripts/download_company.sh --name "$n" --market "$m" --code "$c" --dest /path --years 10
+done < companies.txt
+```
+
+</details>
 
 ---
 
@@ -117,9 +138,33 @@ done
 | **弹窗 index 动态取** | 导出弹窗的选项 index 每次都变，脚本每次重新快照获取 |
 | **员工数据兜底** | 该页 UI 导出在自动化下不触发 → 用 DOM 提取表格 + 本地生成 CSV |
 | **跨盘归档** | 用 `cp` + `rm` 代替 `mv`（跨设备 `mv` 报 `EXDEV`） |
-| **目录规范** | 按公司分子文件夹，PDF 单独进 `年报PDF/` |
+| **目录规范** | 按公司分子文件夹，PDF 分别进 `年报PDF/` 与 `招股资料/` |
+| **验收盘真实落盘** | 退出码 0 ≠ 成功，批量后必须用 Python 盘目录（脚本内部失败不改退出码） |
+| **IPO 分类取招股书** | 走 `announcement-type=ipo`，**不是** `search-key=招股说明书`（后者会漏掉「招股意向书」）|
 
-> 详细机制见 [`references/02-lixinger-internals.md`](references/02-lixinger-internals.md)；踩坑与排查见 [`references/03-troubleshooting.md`](references/03-troubleshooting.md)。
+> 详细机制见 [`references/02-lixinger-internals.md`](references/02-lixinger-internals.md)；踩坑与排查见 [`references/03-troubleshooting.md`](references/03-troubleshooting.md)；**多公司批量必读** [`references/04-batch-playbook.md`](references/04-batch-playbook.md)。
+
+---
+
+## 💡 三条血泪经验（价值最高的部分）
+
+这三条都是真金白银换来的，任何一个不知道都会白干一轮：
+
+**1. 退出码 0 ≠ 成功 —— 必须盘真实落盘**
+`download_company.sh` 内部个别年份下载失败**不会**改变退出码，只在日志里打 ⚠️。
+实测 12 家全部退出码 0，真盘却发现 **4 家整段 0 份 + 3 家零星缺年**。
+批量后务必用 Python 盘一遍目录（模板见 `references/04` 第三节）。
+
+**2. 招股书要用「IPO 分类」，别用关键词搜索**
+`search-key=招股说明书` 只能命中标题写死"招股说明书"的，而老公司 IPO 时用的是
+「**招股意向书**」，会被整批漏掉。改用公告页 IPO 分类后：
+同一批 17 家公司，**从 5 家 5 份 → 15 家 151 份**。
+
+**3. 补漏有优先级，两条路是死的**
+`重跑 PDF 段` → `港交所 hkexnews 补` → `抓 href 走浏览器直下`。
+❌ **curl 直下交易所链接**（防盗链）、❌ **巨潮 cninfo API**（当前返回空）——这两条别浪费时间。
+港股补年报还有四坑：JSONP 剥壳、中文数字年份（「二零二零年年度報告」）、
+`toDate` 要放宽到次年、`prefix.do` 会限流（建议硬编码 stockId）。
 
 ---
 
@@ -132,10 +177,12 @@ lixinger-download/
 ├── references/
 │   ├── 01-environment-setup.md          ← 环境安装（macOS/Win/Linux 三平台）
 │   ├── 02-lixinger-internals.md         ← URL 模式、导出机制、各页面差异
-│   └── 03-troubleshooting.md            ← 坑位清单与排查决策树
+│   ├── 03-troubleshooting.md            ← 坑位清单与排查决策树
+│   └── 04-batch-playbook.md             ← 批量实战手册（验收盘点 / 补漏决策树 / 17家实测表）
 └── scripts/
     ├── setup_env.sh                     ← 环境自检与一键安装
     ├── download_company.sh              ← 单公司完整下载主脚本（参数化）
+    ├── batch_download.sh                ← 批量串行驱动（读清单文件，日志 + 即时播报）
     └── companies.example.json           ← 批量公司清单模板
 ```
 
@@ -179,7 +226,8 @@ A: 按 [`references/01-environment-setup.md`](references/01-environment-setup.md
 
 | 版本 | 说明 |
 |---|---|
-| 当前版 | 三阶段流程（环境→单公司→批量）· URL 直达免点按钮 · 员工数据 DOM 兜底 · 跨平台环境文档 · 命名与目录规范 |
+| **v2.0**（当前） | **IPO 招股/发行文件批量下载**（`announcement-type=ipo`）· 批量串行驱动脚本 `batch_download.sh` · 批量实战手册 `04-batch-playbook.md` · **验收盘点与补漏决策树** · 港股年报补漏（hkexnews 坑位全记录）· 目录规范加 `招股资料/` 子层 |
+| v1.0 | 三阶段流程（环境→单公司→批量）· URL 直达免点按钮 · 员工数据 DOM 兜底 · 跨平台环境文档 · 命名与目录规范 |
 
 ---
 
