@@ -108,6 +108,26 @@ echo " 输出目录: $IPO_DIR"
 echo "=========================================="
 
 cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
+
+# 收尾批量自净: 把下载目录里「与本公司在库文件逐字节相同」的「未确认 *.crdownload」孤儿删掉。
+# 规则同 clean_twin_crdownload: 先体积预筛, 再 md5 比对; 内容不同的一律保留。
+sweep_twin_crdownloads() {
+  local f sz h base cnt=0 sig=""
+  for f in "$IPO_DIR"/*.pdf "$COMPANY_DIR"/年报PDF/*.pdf; do
+    [ -f "$f" ] || continue
+    sig="$sig|$(fsize "$f"):$(md5_p "$f")|"
+  done
+  [ -z "$sig" ] && return 0
+  for f in "$DOWNLOADS"/*.crdownload; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    case "$base" in 未确认*|Unconfirmed*) ;; *) continue ;; esac
+    sz=$(fsize "$f"); h=$(md5_p "$f")
+    case "$sig" in *"|${sz}:${h}|"*) rm -f "$f"; cnt=$((cnt+1)) ;; esac
+  done
+  [ "$cnt" -gt 0 ] && echo "  🧹 收尾自净: 清理同内容孤儿 .crdownload ${cnt} 个"
+  return 0
+}
 trap cleanup EXIT INT TERM
 
 IPO_URL="${PREFIX}/announcement?announcement-type=ipo"
@@ -233,6 +253,24 @@ new_lines() { comm -13 "$1" "$2" 2>/dev/null; }               # 相对上一快�
 new_pdf()   { new_lines "$1" "$2" | grep -iE '\.pdf$' | head -1 | sed -E 's/^[0-9]+ //'; }
 new_cr()    { new_lines "$1" "$2" | grep -iE '\.crdownload$' | sort -k1,1n | tail -1; }
 md5_p() { if [ "$IS_MAC" = "1" ]; then md5 -q "$1" 2>/dev/null; else md5sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
+# 自净: 删掉下载目录里与【刚归档文件】字节相同的「未确认 *.crdownload」孤儿。
+# 依据: ① 文件是自定义的未确认下载(非用户正常下载) ② 内容与已入库文件【逐字节相同】→ 删除零信息损失。
+# 反之, 内容不同的 crdownload 一律保留(可能是我们没拿到的那一份), 不碰。
+clean_twin_crdownload() {  # $1=刚归档的文件全路径
+  local newf="$1" sz f base h
+  sz=$(fsize "$newf"); [ -n "$sz" ] || return 0
+  h=$(md5_p "$newf"); [ -n "$h" ] || return 0
+  for f in "$DOWNLOADS"/*.crdownload; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    case "$base" in 未确认*|Unconfirmed*) ;; *) continue ;; esac
+    [ "$(fsize "$f")" = "$sz" ] || continue
+    if [ "$(md5_p "$f")" = "$h" ]; then
+      rm -f "$f" && echo "  🧹 清理同内容残留: ${base}"
+    fi
+  done
+  return 0
+}
 # 重名组内容自检: 同名条目靠 --index 下载时【可能拿回同一份】(实测中国广核 3 条里 2 条字节相同,
 #   而源站三份内容各异) → 这属于静默错内容, 必须报出来而不是装作成功。
 # 先用体积预筛(快), 只有同体积才做 md5。
@@ -332,6 +370,7 @@ while IFS= read -r line; do
     if archive "$NEW" "$DST"; then
       if [ "$IS_DUP" -eq 1 ]; then echo "  ✅ ${SAFE}(重名#${SEQ})"; else echo "  ✅ ${SAFE}"; fi
       OK_COUNT=$((OK_COUNT+1))
+      clean_twin_crdownload "$DST"
       if [ "$IS_DUP" -eq 1 ] && check_dup_content "$DST"; then
         DUP_CONTENT="$DUP_CONTENT ${SAFE}#${SEQ}"
       fi
@@ -346,6 +385,7 @@ while IFS= read -r line; do
     fi
   fi
 done < "$HITS"
+sweep_twin_crdownloads
 fi
 
 cleanup
