@@ -19,10 +19,20 @@
 #
 # 产出: {dest}/{name}/招股资料/{name}_{标题去掉公司名前缀}.pdf
 # 幂等: 已存在且校验通过的文件跳过, 不重复下载。
+#
+# 🔴🔴 硬规则（老板 2026-09-19 明确要求）：**禁止全量灌 IPO 分类** 🔴🔴
+#   老板原话:「IPO 只留我现在正在要的这种，你不要再重复下载了。
+#              有些 IPO 的内容不是我需要的，我自己已经做过筛选。」
+#   IPO 分类下条目很多（实测 17 家合计 153 条），但**大部分不是老板要的**：
+#   发行公告 / 询价·中签·摇号公告 / 投资风险特别公告 / 保荐书 / 法律意见书 /
+#   限售股上市流通公告 / 募集资金账户公告 …… 这些程序性文件一律不要。
+#   👉 因此本脚本**必须**用 --include 指定要抓的类型，否则直接报错退出；
+#      只有显式加 --all 才允许全量（正常情况下不该用）。
+#   例：只看招股书类 →  --include 招股说明书,招股意向书
 # ============================================================
 set -uo pipefail
 
-NAME=""; MARKET=""; CODE=""; DEST=""
+NAME=""; MARKET=""; CODE=""; DEST=""; INCLUDE=""; ALLOW_ALL=0
 SID="lixinger-ipo-$(date +%s)"
 
 VENV="${LIXINGER_VENV:-$HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl}"
@@ -36,13 +46,30 @@ while [[ $# -gt 0 ]]; do
     --market) MARKET="$2"; shift 2;;
     --code) CODE="$2"; shift 2;;
     --dest) DEST="$2"; shift 2;;
+    --include) INCLUDE="$2"; shift 2;;    # 逗号分隔的关键词, 标题命中任一才下载
+    --all) ALLOW_ALL=1; shift;;           # 显式全量（不推荐, 仅特殊场景）
     -h|--help) awk 'NR>2 && /^# =/{exit} NR>2{sub(/^# ?/,""); print}' "$0"; exit 0;;
     *) echo "未知参数: $1"; exit 1;;
   esac
 done
 
 if [ -z "$NAME" ] || [ -z "$MARKET" ] || [ -z "$CODE" ] || [ -z "$DEST" ]; then
-  echo "❌ 缺少必填参数。用法: $0 --name 公司名 --market sh --code 600900 --dest 目标目录"
+  echo "❌ 缺少必填参数。用法: $0 --name 公司名 --market sh --code 600900 --dest 目标目录 --include 招股说明书,招股意向书"
+  exit 1
+fi
+
+if [ -z "$INCLUDE" ] && [ "$ALLOW_ALL" -eq 0 ]; then
+  echo "=========================================="
+  echo " ❌ 已拒绝执行：未指定要下载的类型"
+  echo "=========================================="
+  echo " 招股资料的取舍由老板人工筛选，脚本【不得】把 IPO 分类整批灌进去。"
+  echo ""
+  echo " 请指定要抓的类型："
+  echo "   --include 招股说明书,招股意向书"
+  echo "   --include 招股意向书,摘要,附录"
+  echo ""
+  echo " 确实需要全量（极不推荐，会塞进大量程序性公告）："
+  echo "   --all"
   exit 1
 fi
 if [ ! -x "$CLI" ]; then
@@ -100,7 +127,7 @@ login_if_needed() {
   echo "  ✅ 自动登录成功"; return 0
 }
 
-OK_COUNT=0; SKIP_COUNT=0; FAIL_LIST=""; DUP_CONTENT=""
+OK_COUNT=0; SKIP_COUNT=0; FILTERED_COUNT=0; FAIL_LIST=""; DUP_CONTENT=""
 
 echo "=========================================="
 echo " 理杏仁招股/发行文件: $NAME ($MARKET$CODE)"
@@ -333,6 +360,19 @@ while IFS= read -r line; do
   SAFE=$(printf '%s' "$BASE_TITLE" | sed 's#[/\\:*?"<>|]#_#g' | tr -s ' ')
   DST="$IPO_DIR/${NAME}_${SAFE}.pdf"
 
+  # ---- 类型过滤（老板铁律：不是他要的类型就跳过，绝不下载）----
+  if [ "$ALLOW_ALL" -eq 0 ]; then
+    _hit=0
+    while IFS= read -r _kw; do
+      [ -z "$_kw" ] && continue
+      case "$TITLE" in *"$_kw"*) _hit=1; break;; esac
+    done <<< "$(printf '%s' "$INCLUDE" | tr ',' '\n')"
+    if [ "$_hit" -eq 0 ]; then
+      FILTERED_COUNT=$((FILTERED_COUNT+1))
+      continue
+    fi
+  fi
+
   # 重名组: 按出现次序取编号(1=无后缀, 2+=(k)) —— 次序确定, 故每条都能独立幂等
   IS_DUP=0; SEQ=1
   if [ -s "$DUP_TITLES" ] && grep -qxF "$TITLE" "$DUP_TITLES"; then
@@ -406,10 +446,11 @@ echo "=========================================="
 echo " 完成: $NAME 招股资料"
 echo " 成功 $OK_COUNT 个文件"
 [ "$SKIP_COUNT" -gt 0 ] && echo " ⏭️跳过(已存在且有效) $SKIP_COUNT 个"
+[ "$FILTERED_COUNT" -gt 0 ] && echo " 🚫按类型过滤(不下载, 非老板要的类型) $FILTERED_COUNT 个"
 [ -n "$FAIL_LIST" ] && echo " ❌失败项:$FAIL_LIST"
 [ -n "$DUP_CONTENT" ] && echo " ⚠️ 重名组内容重复(疑似映射错, 需人工复核):$DUP_CONTENT"
-# 完整性自检: 页面条目数 vs 实际处理数(成功+跳过), 不等即告警(便于发现漏抓)
-DN=$(( OK_COUNT + SKIP_COUNT ))
+# 完整性自检: 页面条目数 vs 实际处理数(成功+跳过+过滤), 不等即告警(便于发现漏抓)
+DN=$(( OK_COUNT + SKIP_COUNT + FILTERED_COUNT ))
 if [ "$COUNT" -gt 0 ] && [ "$DN" -lt "$COUNT" ]; then
   echo " ⚠️ 完整性告警: 页面 ${COUNT} 条 > 实际处理 ${DN} 条(差 $(( COUNT - DN )) 条), 建议重跑(幂等, 已下不再重复)"
 fi
