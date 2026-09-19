@@ -82,6 +82,9 @@ if [ "$(uname -s)" = "Darwin" ]; then IS_MAC=1; else IS_MAC=0; fi
 # 下载落地垃圾治理库（未确认*.crdownload 的隔离与同内容清理）
 # shellcheck source=lib_orphans.sh
 source "$(cd "$(dirname "$0")" && pwd)/lib_orphans.sh"
+# PDF 完整性校验库（头部 / 体积 / 尾部）
+# shellcheck source=lib_pdf.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib_pdf.sh"
 PREFIX="${BASE}/${MARKET}/${CODE}/${CODE}"
 COMPANY_DIR="$DEST/$NAME"
 IPO_DIR="$COMPANY_DIR/招股资料"
@@ -130,7 +133,7 @@ login_if_needed() {
   echo "  ✅ 自动登录成功"; return 0
 }
 
-OK_COUNT=0; SKIP_COUNT=0; FILTERED_COUNT=0; FAIL_LIST=""; DUP_CONTENT=""
+OK_COUNT=0; SKIP_COUNT=0; FILTERED_COUNT=0; FAIL_LIST=""; DUP_CONTENT=""; SUSPECT_LIST=""
 
 echo "=========================================="
 echo " 理杏仁招股/发行文件: $NAME ($MARKET$CODE)"
@@ -309,9 +312,16 @@ try_download() {
     DL_NEW=$(new_pdf /tmp/.lx_ipo_before.txt /tmp/.lx_ipo_after.txt)
     [ -n "$DL_NEW" ] && return 0
     cr=$(new_cr /tmp/.lx_ipo_before.txt /tmp/.lx_ipo_after.txt)
-    if [ -n "$cr" ] && [ "$cr" = "$prev_cr" ]; then
+    if [ -n "$cr" ]; then
       cand=$(printf '%s' "$cr" | sed -E 's/^[0-9]+ //')
-      if [ "$(head -c 5 "$DOWNLOADS/$cand" 2>/dev/null)" = "%PDF-" ]; then DL_NEW="$cand"; return 0; fi
+      # 接受该 .crdownload 的条件（满足其一即可）：
+      #   ① 体积与上一轮一致（已停止增长）  ② 末尾已有 %%EOF/startxref（说明已写完）
+      #   两个前提都要求文件头是 %PDF- —— 挡住 HTML 错误页伪装（实测 3872B 空壳）
+      if pdf_head_ok "$DOWNLOADS/$cand"; then
+        if [ "$cr" = "$prev_cr" ] || pdf_tail_ok "$DOWNLOADS/$cand"; then
+          DL_NEW="$cand"; return 0
+        fi
+      fi
     fi
     prev_cr="$cr"
     [ "$i" -eq 8 ] && [ -z "$cr" ] && return 1   # 前 16s 毫无动静 → 下载未触发, 早退去重试
@@ -391,6 +401,12 @@ while IFS= read -r line; do
       if [ "$IS_DUP" -eq 1 ]; then echo "  ✅ ${SAFE}(重名#${SEQ})"; else echo "  ✅ ${SAFE}"; fi
       OK_COUNT=$((OK_COUNT+1))
       delete_twin_orphans "$DST"
+      # 入库后复查尾部完整性: 缺 %%EOF/startxref → 疑似截断。
+      # 只告警不拒收 —— 拒收会导致反复重下(正是老板不想要的), 报告出来让人复核即可。
+      if ! pdf_tail_ok "$DST"; then
+        echo "  ⚠️  尾部无 %%EOF/startxref, 疑似截断(已入库, 请复核): ${SAFE}"
+        SUSPECT_LIST="$SUSPECT_LIST ${SAFE}"
+      fi
       if [ "$IS_DUP" -eq 1 ] && check_dup_content "$DST"; then
         DUP_CONTENT="$DUP_CONTENT ${SAFE}#${SEQ}"
       fi
@@ -428,6 +444,7 @@ echo " 成功 $OK_COUNT 个文件"
 [ "$FILTERED_COUNT" -gt 0 ] && echo " 🚫按类型过滤(不下载, 非老板要的类型) $FILTERED_COUNT 个"
 [ -n "$FAIL_LIST" ] && echo " ❌失败项:$FAIL_LIST"
 [ -n "$DUP_CONTENT" ] && echo " ⚠️ 重名组内容重复(疑似映射错, 需人工复核):$DUP_CONTENT"
+[ -n "$SUSPECT_LIST" ] && echo " ⚠️ 疑似截断(尾部无 %%EOF/startxref, 请复核):$SUSPECT_LIST"
 # 完整性自检: 页面条目数 vs 实际处理数(成功+跳过+过滤), 不等即告警(便于发现漏抓)
 DN=$(( OK_COUNT + SKIP_COUNT + FILTERED_COUNT ))
 if [ "$COUNT" -gt 0 ] && [ "$DN" -lt "$COUNT" ]; then

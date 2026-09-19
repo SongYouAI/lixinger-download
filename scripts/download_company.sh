@@ -81,6 +81,9 @@ PREFIX="${BASE}/${MARKET}/${CODE}/${CODE}"
 # 下载落地垃圾治理库（未确认*.crdownload 的隔离与同内容清理）
 # shellcheck source=lib_orphans.sh
 source "$(cd "$(dirname "$0")" && pwd)/lib_orphans.sh"
+# PDF 完整性校验库（头部 / 体积 / 尾部）
+# shellcheck source=lib_pdf.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib_pdf.sh"
 
 COMPANY_DIR="$DEST/$NAME"
 PDF_DIR="$COMPANY_DIR/年报PDF"
@@ -181,9 +184,15 @@ wait_download() {
     DL_NEW=$(new_pdf_line /tmp/.lx_dl_before.txt /tmp/.lx_dl_after.txt)
     [ -n "$DL_NEW" ] && return 0
     cr=$(new_cr_line /tmp/.lx_dl_before.txt /tmp/.lx_dl_after.txt)
-    if [ -n "$cr" ] && [ "$cr" = "$prev_cr" ]; then
+    if [ -n "$cr" ]; then
       cand=$(printf '%s' "$cr" | sed -E 's/^[0-9]+ //')
-      if [ "$(head -c 5 "$DOWNLOADS/$cand" 2>/dev/null)" = "%PDF-" ]; then DL_NEW="$cand"; return 0; fi
+      # 接受条件(满足其一): ① 体积已停止增长  ② 末尾已有 %%EOF/startxref(说明写完了)
+      # 均要求文件头为 %PDF-, 挡住 HTML 错误页伪装(实测 3872B 空壳)
+      if pdf_head_ok "$DOWNLOADS/$cand"; then
+        if [ "$cr" = "$prev_cr" ] || pdf_tail_ok "$DOWNLOADS/$cand"; then
+          DL_NEW="$cand"; return 0
+        fi
+      fi
     fi
     prev_cr="$cr"
     if [ "$i" -eq 8 ] && [ -z "$cr" ]; then return 1; fi   # 16s 内毫无动静 → 下载未触发
@@ -218,7 +227,7 @@ login_if_needed() {
   return 0
 }
 
-OK_COUNT=0; SKIP_COUNT=0; FAIL_LIST=""; NO_DATA_LIST=""; HSHARE_LIST=""
+OK_COUNT=0; SKIP_COUNT=0; FAIL_LIST=""; NO_DATA_LIST=""; HSHARE_LIST=""; SUSPECT_LIST=""
 
 echo "=========================================="
 echo " 理杏仁下载: $NAME ($MARKET$CODE)"
@@ -256,12 +265,44 @@ for i in "${!TICKERS[@]}"; do
   T="${TICKERS[$i]}"; L="${LABELS[$i]}"
   echo "───── [$((i+1))/${#TICKERS[@]}] $L ($T) ─────"
 
+  # 幂等（老板 2026-09-20：以后不许出现重复下载）:
+  #   该类报表已存在且非空 → 直接跳过, 【连页面都不打开】(省一次导航+导出)。
+  #   真正要重导时显式加 --force。
+  if [ "$FORCE" -eq 0 ]; then
+    CSV_EXIST=""
+    for _f in "$COMPANY_DIR"/*.csv; do
+      [ -f "$_f" ] || continue
+      case "$(basename "$_f")" in
+        "${NAME}_${L}"*) CSV_EXIST="$(basename "$_f")"; break;;
+      esac
+    done
+    if [ -n "$CSV_EXIST" ] && [ -s "$COMPANY_DIR/$CSV_EXIST" ]; then
+      echo "  ⏭️  已存在(${CSV_EXIST}), 跳过(要重导加 --force)"
+      SKIP_COUNT=$((SKIP_COUNT+1))
+      continue
+    fi
+  fi
+
   "$CLI" browser_go_to_url --sessionId "$SID" --url "${PREFIX}/${T}?${QUERY}" >/dev/null 2>&1
-  "$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
+
+  # ---------- 就绪判定（2026-09-20 新增）----------
+  # 教训同公告页: 页面是异步渲染的，旧版固定等 6s 就在"控件还没出来"的状态下判断，
+  #   轻则误判「未收录」(静默漏一类报表)，重则报「未找到排序选项」。
+  # 现改为轮询到页面出现「数据选项」锚点为止(最多约 24s)；
+  #   若始终没有 → 明确报"未渲染"，计入失败，绝不静默跳过。
+  CSV_READY=0
+  for _r in $(seq 1 8); do
+    "$CLI" browser_wait --sessionId "$SID" --seconds 3 >/dev/null 2>&1
+    "$CLI" browser_eval_content_js --sessionId "$SID" --script "document.body.innerText" \
+      > /tmp/.lx_pagetext.txt 2>&1
+    if grep -q '数据选项' /tmp/.lx_pagetext.txt 2>/dev/null; then CSV_READY=1; break; fi
+  done
+  if [ "$CSV_READY" -eq 0 ]; then
+    echo "  ❌ 页面始终未渲染出「数据选项」(加载失败?), 跳过以免误判"
+    FAIL_LIST="$FAIL_LIST $L[页面未渲染]"; continue
+  fi
 
   # 该报表理杏仁是否未收录(部分公司无经营数据等) → 明确跳过, 避免误报成"找不到排序选项"
-  "$CLI" browser_eval_content_js --sessionId "$SID" --script "document.body.innerText" \
-    > /tmp/.lx_pagetext.txt 2>&1
   if page_no_data; then
     echo "  ⏭️  理杏仁未收录【$L】, 跳过(数据源缺失, 非脚本故障)"
     NO_DATA_LIST="$NO_DATA_LIST $L"; continue
@@ -324,6 +365,11 @@ done
 # 第二部分: 员工数据（DOM 提取兜底 —— UI 导出在自动化下不触发）
 # ============================================================
 echo "───── [7/7] 员工数据 (DOM提取) ─────"
+# 幂等: 已存在且非空 → 跳过(不打开页面)。要重导加 --force。
+if [ "$FORCE" -eq 0 ] && [ -s "$COMPANY_DIR/${NAME}_员工数据_全体员工.csv" ]; then
+  echo "  ⏭️  已存在(${NAME}_员工数据_全体员工.csv), 跳过(要重导加 --force)"
+  SKIP_COUNT=$((SKIP_COUNT+1))
+else
 "$CLI" browser_go_to_url --sessionId "$SID" --url "${PREFIX}/employee/all-employee?${QUERY}" >/dev/null 2>&1
 "$CLI" browser_wait --sessionId "$SID" --seconds 6 >/dev/null 2>&1
 
@@ -357,6 +403,7 @@ if [ -f /tmp/.lx_emp_fail ]; then
   rm -f /tmp/.lx_emp_fail
   FAIL_LIST="$FAIL_LIST 员工数据"
 fi
+fi   # 员工数据幂等守卫
 
 fi  # SKIP_CSV  ← CSV部分到此结束(PDF独立在后, 故 --skip-csv 不会连带跳过PDF)
 
@@ -365,11 +412,59 @@ fi  # SKIP_CSV  ← CSV部分到此结束(PDF独立在后, 故 --skip-csv 不会
 # ============================================================
 if [ "$SKIP_PDF" -eq 0 ]; then
 echo "───── PDF年报下载 ─────"
-# 年报在「公告」页: 用 search-key 筛选年度报告(排除摘要/半年度/季报)
-# 注意: 员工页/经营数据页快照里只有各类临时公告, 不含年度报告, 必须用公告筛选页
-ANN_URL="${PREFIX}/announcement?search-key=%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A"
-"$CLI" browser_go_to_url --sessionId "$SID" --url "$ANN_URL" >/dev/null 2>&1
-"$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
+# 年报在「公告」页。
+# 🔴 2026-09-20 重大修正：**不要再用 `search-key=年度报告`** —— 实测该筛选已失效：
+#   页面直接显示「没有相关数据。」，pdf 链接数 0 → 脚本「发现 0 个年报链接」→
+#   **静默漏抓整段年报**（而且不报错，极易被误判成"数据源没有"）。
+#   对照实测同一时刻：`announcement-type=all` 正常（pdf 链接 100 个）。
+#   好在下方本来就有【按标题正则筛年报】的逻辑（FULL_RE/PLAIN_RE），
+#   所以取全部公告 + 用正则挑年报即可，不再依赖站点的 search-key 筛选。
+ANN_URL="${PREFIX}/announcement?announcement-type=all"
+
+# ---------- 🔴 换一个【以公告页为初始页】的全新会话来做年报采集（2026-09-20 修复）----------
+# 实测教训: 在已开着的会话里做【站内路由跳转】(browser_go_to_url)到公告页时，
+#   公告列表**根本不会渲染** —— JS 查 pdf 链接数恒为 0，等 42s 无效、
+#   browser_tab_reload 硬刷新也无效、browser_tab_open 后不切游标同样无效。
+# 对照实测: 用 --initialUrl 直接以公告页【新开会话】立刻正常。
+#   → 理杏仁是 SPA，站内路由切换会把页面搞成"半渲染"状态，必须走全新加载。
+# 做法: 关掉 CSV 阶段的会话（它已完成使命），把 SID 换成新会话 id，
+#   后面所有代码继续用 $SID → 无需改任何调用点；trap 也会正确关掉新会话。
+"$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1
+SID="${SID}-ann"
+"$CLI" browser_start_session --sessionId "$SID" --title "$NAME年报公告" --color cyan \
+  --initialUrl "$ANN_URL" >/dev/null 2>&1
+
+# ---------- 就绪判定（2026-09-20 新增，修「发现 0 个年报链接」）----------
+# 实测教训: 公告列表是【异步渲染】的。旧版固定等 5s 就开始采集,
+#   而该页（华能国际 55 条）要 12~14s 才把列表渲染出来 —— 于是快照全是空的,
+#   日志打成「发现 0 个年报链接, 跳过PDF阶段」→ 静默漏抓整段年报。
+#   ⚠️ 而且它**不报错**，只看日志很容易以为是"数据源没有"。
+# 现改为: 轮询 JS 里的 pdf 链接数, 连续两次一致才认为就绪(最多约 40s), 再开始分段滚动采集。
+ann_pdf_count() {
+  "$CLI" browser_eval_content_js --sessionId "$SID" \
+    --script "(()=>'ANNCNT='+[...document.querySelectorAll('a')].filter(x=>/\.pdf/i.test(x.getAttribute('href')||'')).length)()" 2>/dev/null \
+    | grep -oE 'ANNCNT=[0-9]+' | head -1 | cut -d= -f2
+}
+ann_ready() {
+  local i cur prev="" stable=0 waited=0
+  for i in $(seq 1 14); do
+    cur=$(ann_pdf_count)
+    if [ -n "$cur" ] && [ "$cur" -gt 0 ] 2>/dev/null; then
+      if [ "$cur" = "$prev" ]; then stable=$((stable+1)); else stable=0; fi
+      prev="$cur"
+      if [ "$stable" -ge 1 ]; then
+        echo "  ⏱️  公告列表就绪(等待约 ${waited}s, 页面 pdf 链接 ${cur} 个)"
+        return 0
+      fi
+    fi
+    "$CLI" browser_wait --sessionId "$SID" --seconds 3 >/dev/null 2>&1
+    waited=$((waited+3))
+  done
+  echo "  ⏱️  等待 ${waited}s 仍未确认公告列表就绪(继续尝试采集)"
+  return 1
+}
+ann_ready || true
+
 # 分段滚动 + 多次快照合并:
 # snapshot 只捕获"视口内"元素, 单次滚到底会让视口停在页面底部,
 # 顶部/中间的年报就会漏掉(年报条目多的公司必踩) → 必须分段滚动逐屏采集
@@ -404,9 +499,35 @@ YEARS_ALL=$( { cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt; } \
 echo "  发现 $(cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt | wc -l | tr -d ' ') 个年报链接, 覆盖年份: $(echo $YEARS_ALL | tr '\n' ' ')"
 
 START_YEAR=$(( $(date +%Y) - YEARS ))
+
+# ---------- 🔴 覆盖度自检（2026-09-20 新增，防止"静默只抓到一年"）----------
+# 背景: 公告列表是【最新在前 + 分页】的。实测 2026-09-20 出现「发现 1 个年报链接,
+#   覆盖年份: 2025」—— 2016~2024 全在后续页, 脚本却会当作"已最新"照常收工。
+#   这类静默漏抓最危险: 日志看着正常, 数据却缺 9 年。
+# 判据: 拿【已在库的年份】跟【本次发现的年份】比 —— 库里有而这次没发现的, 就是漏抓。
+#   （首次下载时库为空, 无法用此判据; 此时若发现年份明显少于 --years 也会提示。）
+LIBYEARS=$(ls -1 "$PDF_DIR" 2>/dev/null | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | sort -u)
+MISSING_YEARS=""
+if [ -n "$LIBYEARS" ]; then
+  for _y in $LIBYEARS; do
+    case " $(echo $YEARS_ALL | tr '\n' ' ') " in
+      *" $_y "*) : ;;
+      *) MISSING_YEARS="$MISSING_YEARS $_y" ;;
+    esac
+  done
+  if [ -n "$MISSING_YEARS" ]; then
+    echo "  🔴 覆盖度告警: 库内已有但本次【未发现】的年份:${MISSING_YEARS}"
+    echo "       极可能是公告列表分页/筛选失效导致抓不全 → 请勿当作「已是最新」!"
+    echo "       排查方向: 公告页是否分页、年度报告分类筛选是否可用(详见 SKILL.md「已知未决问题」)"
+  fi
+fi
+
 # bash 3.2 + set -u 下空数组展开会崩(unbound variable), 必须守卫
 if [ -z "$YEARS_ALL" ]; then
   echo "  ⚠️  公告页未匹配到年报链接, 跳过PDF阶段(不中断后续)"
+  echo "      ⚠️ 注意: 这可能是【列表没渲染出来/筛选失效】而不是数据源没有 ——"
+  echo "         2026-09-20 实测 search-key 筛选已失效(页面显示「没有相关数据」), 已改用 type=all;"
+  echo "         若反复出现请检查公告页结构是否又变"
 else
 HSHARE_LIST=""   # 记录"只有 H 股版可用"的年份, 汇总时告警
 for YEAR in $YEARS_ALL; do
@@ -476,6 +597,12 @@ for YEAR in $YEARS_ALL; do
       [ "$VER" = "H股繁体" ] && HSHARE_LIST="$HSHARE_LIST $YEAR"
       OK_COUNT=$((OK_COUNT+1))
       delete_twin_orphans "$DST"   # 顺手清掉与它同内容的「未确认*.crdownload」孤儿
+      # 入库后复查尾部完整性: 缺 %%EOF/startxref → 疑似截断。只告警不拒收
+      # （拒收会导致反复重下, 正是老板不想要的）。
+      if ! pdf_tail_ok "$DST"; then
+        echo "  ⚠️  ${YEAR}年 尾部无 %%EOF/startxref, 疑似截断(已入库, 请复核)"
+        SUSPECT_LIST="$SUSPECT_LIST PDF${YEAR}"
+      fi
     else
       echo "  ❌ 归档失败 ${YEAR}年"; FAIL_LIST="$FAIL_LIST PDF${YEAR}"
     fi
@@ -520,6 +647,7 @@ echo " 成功 $OK_COUNT 个文件"
 [ -n "$FAIL_LIST" ] && echo " ❌失败项:$FAIL_LIST"
 [ -n "$NO_DATA_LIST" ] && echo " ⏭️理杏仁未收录(数据源缺失,非故障):$NO_DATA_LIST"
 [ -n "$HSHARE_LIST" ] && echo " ⚠️这些年份仅H股可用(A股未收录,繁体版):$HSHARE_LIST"
+[ -n "$SUSPECT_LIST" ] && echo " ⚠️疑似截断(尾部无 %%EOF/startxref, 请复核):$SUSPECT_LIST"
 echo " 目录: $COMPANY_DIR"
 echo "   PDF: $(ls -1 "$PDF_DIR" 2>/dev/null | wc -l | tr -d ' ') 个"
 echo "   CSV: $(ls -1 "$COMPANY_DIR"/*.csv 2>/dev/null | wc -l | tr -d ' ') 个"
