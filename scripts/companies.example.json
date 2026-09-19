@@ -1,6 +1,6 @@
 {
   "_说明": "批量下载公司清单模板。复制为 companies.json 后按需修改。市场代码: sh=沪市, sz=深市, hk=港股。",
-  "dest": "/Volumes/KIOXIA/理杏仁下载",
+  "dest": "/Volumes/KIOXIA/上市公司研究/电力系统/01-发电运营（15家）",
   "years": 10,
   "companies": [
     { "name": "长江电力", "market": "sh", "code": "600900", "_note": "已验证通过（样板）" },

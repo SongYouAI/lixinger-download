@@ -69,15 +69,20 @@ python3 -m venv "$VENV"
 
 安装完成后**打开一次 QQ 浏览器**，让它完成初始化。
 
-### 步骤 5：手动登录理杏仁（Agent 无法代劳）
+### 步骤 5：登录理杏仁（首次手动一次；之后可自动恢复）
 
-1. 在 QQ 浏览器打开 https://www.lixinger.com
-2. 手动登录账号
-3. 保持登录（勾选"记住我"）
-4. **验证**：登录后访问首页会跳转到个人中心（`https://www.lixinger.com/profile/center/...`），说明登录态正常
+首次需在 QQ 浏览器打开 https://www.lixinger.com 手动登录一次，勾选"记住我"
+（**账号密码会保存在浏览器里**，这是后续自动登录的前提）。
 
-> ⚠️ 这一步**必须由人完成**。登录态存在浏览器 cookie 里，之后所有自动化都会复用它。
-> 理杏仁 token 会过期，若某天导出失败且页面跳回登录页，**重新手动登录一次**即可。
+> ✅ **之后无需再手动**：`download_company.sh` / `download_ipo.sh` 内置 `login_if_needed()`，
+> 检测到未登录会**自动点击右上角「登录/注册」**——账号密码已存于浏览器，**一点即登录**。
+> （老板 2026-09-19 亲授）
+>
+> ⛔ **切勿因未登录就换数据源！** 2026-09-19 实测绕去东方财富 / 巨潮 cninfo / 上交所 / 新浪
+> **全部碰壁**（东财把年报路由到「一张图读懂」信息图、cninfo 与 SSE API 均 500、新浪 Service not valid），
+> 白白浪费十几轮排查。正确动作只有两个：**自动点击登录** → 失败才**手动登录一次**。
+>
+> 验证登录态：访问首页会跳转到个人中心（`https://www.lixinger.com/profile/center/...`）。
 
 ### 步骤 6：启动守护进程
 
@@ -137,7 +142,7 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 - [ ] `python3 --version` ≥ 3.9
 - [ ] venv 已创建，qqbrowser-skill CLI 可执行
 - [ ] QQ 浏览器已安装且能正常打开网页
-- [ ] **理杏仁已手动登录**（访问首页会跳个人中心）
+- [ ] **理杏仁已登录**（首次手动一次；之后脚本会自动恢复。访问首页会跳个人中心）
 - [ ] `qqbrowser-skill status` 显示 `Daemon is running` 且 `Connected clients ≥ 1`
 - [ ] 目标磁盘有足够空间（每家公司约 30 MB：CSV 约 150 KB + PDF 约 28 MB）
 

@@ -26,7 +26,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 SCRIPT=~/.workbuddy/skills/lixinger-download/scripts/download_company.sh
-DEST="/Volumes/KIOXIA/理杏仁下载"
+DEST="/Volumes/KIOXIA/上市公司研究/电力系统/01-发电运营（15家）"   # 用当前数据集实际位置
 LOG=/tmp/lx_batch.log
 : > "$LOG"
 # 用普通数组，别用 declare -A（本机按 zsh 语义跑，关联数组报 syntax error）
@@ -41,7 +41,8 @@ for c in "${COMPANIES[@]}"; do
   MKT=$(echo "$c"  | cut -d'|' -f2)
   CODE=$(echo "$c" | cut -d'|' -f3)
   echo "########## [$N/${#COMPANIES[@]}] 开始: $NAME ($MKT$CODE) $(date '+%H:%M:%S') ##########" | tee -a "$LOG"
-  bash "$SCRIPT" --name "$NAME" --market "$MKT" --code "$CODE" --dest "$DEST" --years 10 >> "$LOG" 2>&1
+  # < /dev/null 防止子脚本读取 stdin 吃掉清单独余行
+  bash "$SCRIPT" --name "$NAME" --market "$MKT" --code "$CODE" --dest "$DEST" --years 10 < /dev/null >> "$LOG" 2>&1
   echo "########## [$N/${#COMPANIES[@]}] 结束: $NAME 退出码=$? ##########" | tee -a "$LOG"
 done
 echo "ALL_DONE" | tee -a "$LOG"
@@ -83,7 +84,9 @@ for n in names:
 |---|---|---|
 | **整段 0 份**（日志「公告页未匹配到年报链接」） | 该公司公告页在 snapshot **和** eval 下年报 `a` 标签都是 0（实测中国神华 sh601088，其他 A 股正常）| ① 重跑一次该家 ② 仍 0 → **走 H 股 hkexnews 补**（神华用 01088 补齐）|
 | **整段 0 份**（港股页面） | 理杏仁 hk 页面公告筛选基本不生效 | 直接走 hkexnews（华润/龙源/中国电力都这么补的）|
-| **散缺个别年份**（「未检测到下载」） | 浏览器下载偶发失灵，链接其实存在 | ① `download_company.sh --skip-csv` 重跑 PDF 段 ② 仍失败 → 抓该年 href 走浏览器直下（**curl 会被上交所防盗链拒**）|
+| **散缺个别年份**（「未检测到下载」） | 浏览器下载偶发失灵，链接其实存在 | ① `download_company.sh --skip-csv --only-years <年份>` 重跑该年（**幂等，不碰其他年份**） ② 仍失败 → 抓该年 href 走浏览器直下（**curl 会被上交所防盗链拒**）|
+| **文件是 H 股繁体版** | 旧正则按 sort 顺序抓到了排前的 H 股条目 | 加 `--force`（可配 `--only-years`）换 A 股版；见 SKILL.md「A 股优先规则」|
+| **PDF 打不开 / 只有 4KB** | 下载产生空壳 | 直接重跑（脚本会先删空壳再下）；脚本已内置空壳校验拒收 |
 | **缺最新一年** | 年报发布于次年，被搜索区间 `toDate` 截断 | hkexnews 的 `toDate` 放宽到**次年 1231**（2025 年报发布于 2026）|
 | **年份匹配不到**（0 命中） | 繁简混用 + **中文数字年份**（华电国际「二零二零年年度報告」）| 正则支持 `年(度)?報` 且兼容中文数字 |
 | **经营数据缺失** | 理杏仁**未收录**该表（实测 7/12 家没有），**数据源限制非故障** | 不补，报告中注明 |
@@ -97,7 +100,11 @@ for n in names:
 ## 五、补漏脚本要点
 
 - **A 股补 PDF 段**：`bash download_company.sh --name X --market sh --code X --dest D --years 10 --skip-csv`
-  （只跑 PDF，跳过 CSV；已存在的文件会重新下载覆盖，内容一致无害）
+  （只跑 PDF，跳过 CSV）
+  - ⚠️ **已内置幂等（2026-09-19 起）**：已存在且校验通过的年份会**直接跳过**，**不会重复下载**。
+    > 旧版会「重新下载覆盖」，害得补 3 个空壳却重下了 6 份有效文件 —— 已废弃该行为。
+  - **只补指定年份**：加 `--only-years 2023,2024`（避免整家重跑）
+  - **强制覆盖（版本升级）**：加 `--force`（如把 H 股繁体版换成 A 股简体版）
 - **H 股 / 上市前年份**：走 hkexnews（stockId 表与坑位见 SKILL.md「港交所 hkexnews 必坑清单」）
 - **抓 href + curl**：仅对部分深交所链接有效（中国广核 2020 成功过），**上交所一律失败**
 
@@ -122,13 +129,20 @@ for n in names:
 {BASE}/{market}/{code}/{code}/announcement?announcement-type=ipo
 ```
 
-下载脚本骨架：
+**已封装成脚本**（2026-09-19 补齐，推荐直接用）：
 ```bash
-# 1) 打开上面 URL → scroll_to_bottom → 分段 scroll（0/700/1400/2100）+ 多次 snapshot 合并
-# 2) 抓每行：grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^>]*/>points to a pdf" | sort -u
+bash scripts/download_ipo.sh --name 三峡能源 --market sh --code 600905 --dest "<目标>"
+# 产出 {目标}/{公司}/招股资料/{公司}_{标题去掉公司名前缀}.pdf
+# 幂等：已存在且校验通过的跳过；空壳拒收
+```
+
+手动骨架（脚本内部即此逻辑）：
+```bash
+# 1) 打开上面 URL → scroll_to_bottom → 分段 scroll（0~9000px）+ 多次 snapshot 合并
+# 2) 抓每行：grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" | sort -u
 # 3) 逐行取 idx + 标题 → browser_download_file → 轮询 ~/Downloads 取新 pdf → 归档
 # 4) 命名 {公司名}_{标题去掉公司名前缀}.pdf，放 {公司}/招股资料/
-# 5) 已存在且 >10KB 就跳过（防重复）
+# 5) 已存在且校验通过就跳过（防重复）
 ```
 - 条目数差异极大：2~30 条/家（中国广核 30、华能水电 25、三峡能源 22）。
 - 港股页面该分类：龙源 00916 有「全球發售」；华润 00836、中国电力 02380 为 0 条。

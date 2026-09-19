@@ -3,7 +3,9 @@
 # 理杏仁 - 批量串行下载（多公司）
 #
 # 用法:
-#   bash batch_download.sh --list companies.txt --dest "/Volumes/KIOXIA/理杏仁下载" [--years 10]
+#   bash batch_download.sh --list companies.txt --dest "/Volumes/KIOXIA/上市公司研究/电力系统/01-发电运营（15家）" \
+#        [--years 10] [--only-years 2020,2021] [--force]
+#   （--only-years / --force 会透传给每家公司的 download_company.sh）
 #
 # 清单文件格式（每行一条，# 开头为注释，空行跳过）:
 #   公司名|market|code
@@ -16,7 +18,7 @@
 # ============================================================
 set -uo pipefail
 
-LIST=""; DEST=""; YEARS=10
+LIST=""; DEST=""; YEARS=10; ONLY_YEARS=""; FORCE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SINGLE="$SCRIPT_DIR/download_company.sh"
 
@@ -25,10 +27,17 @@ while [[ $# -gt 0 ]]; do
     --list)  LIST="$2";  shift 2;;
     --dest)  DEST="$2";  shift 2;;
     --years) YEARS="$2"; shift 2;;
-    -h|--help) sed -n '3,16p' "$0" | sed 's/^# *//'; exit 0;;
+    --only-years) ONLY_YEARS="$2"; shift 2;;
+    --force) FORCE=1; shift;;
+    -h|--help) awk 'NR>2 && /^# =/{exit} NR>2{sub(/^# ?/,""); print}' "$0"; exit 0;;
     *) echo "未知参数: $1"; exit 1;;
   esac
 done
+
+# 透传给单公司脚本的附加参数
+EXTRA=""
+[ -n "$ONLY_YEARS" ] && EXTRA="$EXTRA --only-years $ONLY_YEARS"
+[ "$FORCE" -eq 1 ] && EXTRA="$EXTRA --force"
 
 if [ -z "$LIST" ] || [ -z "$DEST" ]; then
   echo "❌ 缺少参数。用法: $0 --list companies.txt --dest <目标目录> [--years 10]"
@@ -45,7 +54,7 @@ echo " 清单: $LIST   目标: $DEST   年数: $YEARS"
 echo " 日志: $LOG"
 echo "=========================================="
 
-TOTAL=$(grep -vE '^\s*(#|$)' "$LIST" | wc -l | tr -d ' ')
+TOTAL=$(grep -vE '^[[:space:]]*(#|$)' "$LIST" | wc -l | tr -d ' ')
 N=0
 while IFS= read -r line; do
   # 跳过注释与空行
@@ -59,7 +68,8 @@ while IFS= read -r line; do
   fi
   echo "───── [$N/$TOTAL] $NAME ($MKT$CODE) $(date '+%H:%M:%S') ─────"
   echo "########## [$N/$TOTAL] 开始: $NAME ($MKT$CODE) $(date '+%H:%M:%S') ##########" >> "$LOG"
-  bash "$SINGLE" --name "$NAME" --market "$MKT" --code "$CODE" --dest "$DEST" --years "$YEARS" >> "$LOG" 2>&1
+  # < /dev/null 防止子脚本读取 stdin 吃掉清单独余行（曾致批量中途丢公司）
+  bash "$SINGLE" --name "$NAME" --market "$MKT" --code "$CODE" --dest "$DEST" --years "$YEARS" $EXTRA < /dev/null >> "$LOG" 2>&1
   EC=$?
   echo "########## [$N/$TOTAL] 结束: $NAME 退出码=$EC $(date '+%H:%M:%S') ##########" >> "$LOG"
   # 即时播报该家的失败项（不要等全跑完才发现）

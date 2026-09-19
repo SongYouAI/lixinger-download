@@ -4,7 +4,16 @@
 #
 # 用法:
 #   bash download_company.sh --name 长江电力 --market sh --code 600900 \
-#        --dest "/Volumes/KIOXIA/理杏仁下载" [--years 10] [--skip-pdf] [--skip-csv]
+#        --dest "/Volumes/KIOXIA/上市公司研究/电力系统/01-发电运营（15家）" [--years 10] [--skip-pdf] [--skip-csv] \
+#        [--only-years 2020,2021,2022] [--force]
+#
+# 幂等说明: 默认【只下载缺失或校验失败的年份】, 已存在且有效的 PDF 直接跳过。
+#   补漏场景直接重跑即可, 不会重复下载。
+#   --only-years : 只处理指定年份(逗号分隔); 与 --force 组合可精准换版(如 H 股→A 股)
+#   --force      : 强制覆盖已有效文件(版本升级时用)
+#
+# A股优先规则(老板 2026-09-19 明确): A+H 两地上市公司【优先下载 A 股年报】,
+#   仅当某年 A 股未收录时才回退 H 股繁体版。脚本内置该优先级, 并会标注每年用的版本。
 #
 # 产出:
 #   {dest}/{name}/
@@ -15,7 +24,8 @@ set -uo pipefail
 
 # ---------- 默认参数 ----------
 NAME=""; MARKET=""; CODE=""; DEST=""; YEARS=10
-SKIP_PDF=0; SKIP_CSV=0
+SKIP_PDF=0; SKIP_CSV=0; FORCE=0
+ONLY_YEARS=""   # 逗号分隔, 如 2020,2021,2022; 空=处理全部年份
 SID="lixinger-dl-$(date +%s)"
 
 # ---------- 路径 ----------
@@ -34,10 +44,17 @@ while [[ $# -gt 0 ]]; do
     --years) YEARS="$2"; shift 2;;
     --skip-pdf) SKIP_PDF=1; shift;;
     --skip-csv) SKIP_CSV=1; shift;;
-    -h|--help) sed -n '3,13p' "$0" | sed 's/^# *//'; exit 0;;
+    --force) FORCE=1; shift;;
+    --only-years) ONLY_YEARS="$2"; shift 2;;
+    -h|--help) awk 'NR>2 && /^# =/{exit} NR>2{sub(/^# ?/,""); print}' "$0"; exit 0;;
     *) echo "未知参数: $1"; exit 1;;
   esac
 done
+# 归一化 only-years（去掉空格, 两端补逗号便于精确匹配）
+if [ -n "$ONLY_YEARS" ]; then
+  ONLY_YEARS=$(printf '%s' "$ONLY_YEARS" | tr -d ' ')
+  ONLY_YEARS=",${ONLY_YEARS},"
+fi
 
 # ---------- 校验 ----------
 if [ -z "$NAME" ] || [ -z "$MARKET" ] || [ -z "$CODE" ] || [ -z "$DEST" ]; then
@@ -68,9 +85,6 @@ mkdir -p "$COMPANY_DIR" "$PDF_DIR"
 
 # ---------- 工具函数 ----------
 log()  { echo "$1"; }
-escape_re() {  # 转义正则元字符, 让公司名可安全用于 grep -E(防 ( ) . * 等注入)
-  printf '%s' "$1" | sed 's/[][\.*^$()+?{}|]/\\&/g'
-}
 # 判定报表页是否"无数据": 只看「数据选项」锚点后 300 字
 # 不能全文 grep "无数据" —— 页面他处(导航栏/指标说明)出现该词会误判整张表未收录
 page_no_data() {
@@ -99,30 +113,73 @@ take_new_file() {  # 与 snap_new_file 配对, 输出新增文件
   ls "$DOWNLOADS" 2>/dev/null | grep -iE "$pattern" | sort > /tmp/.lx_after.txt
   comm -13 /tmp/.lx_before.txt /tmp/.lx_after.txt | head -1
 }
+# ---------- 空壳校验（老板 2026-09-19 明确要求建检查机制）----------
+# 背景: 脚本曾静默产出 3872 字节空壳 PDF(有文件名、打不开), 老板误以为"下载成功"。
+# 判定必须同时看【文件头 %PDF-】和【体积】, 只看"文件存在"必然漏判。
+MIN_PDF_BYTES="${MIN_PDF_BYTES:-102400}"   # 100KB; 正常年报至少 1MB+, 低于此即空壳/半截
+fsize() { if [ "$IS_MAC" = "1" ]; then stat -f%z "$1" 2>/dev/null; else stat -c%s "$1" 2>/dev/null; fi; }
+valid_pdf() {  # $1=路径; 有效返回 0, 空壳/损坏返回 1
+  local f="$1"; local sz hdr
+  [ -f "$f" ] || return 1
+  sz=$(fsize "$f"); [ -n "$sz" ] || return 1
+  [ "$sz" -ge "$MIN_PDF_BYTES" ] || return 1
+  hdr=$(head -c 5 "$f" 2>/dev/null)
+  [ "$hdr" = "%PDF-" ] || return 1
+  return 0
+}
 archive() {  # $1=源文件名(basename) $2=目标完整路径
   local src="$DOWNLOADS/$1"; local dst="$2"
-  if [ -f "$src" ]; then
-    # macOS 用 -X 不带扩展属性复制, 避免在 exFAT 等外置盘生成 ._ 伴生垃圾文件
-    if [ "$IS_MAC" = "1" ]; then
-      cp -X "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
-    else
-      cp "$src" "$dst"
-    fi
-    if [ -f "$dst" ]; then rm -f "$src"; return 0; fi
+  if [ ! -f "$src" ]; then return 1; fi
+  # ⚠️ 空壳一律拒收: 直接丢弃临时文件, 绝不覆盖已存在的有效目标
+  if ! valid_pdf "$src"; then
+    echo "  ❌ 空壳/半截文件已丢弃(未污染目标): $(basename "$src") $(fsize "$src")B"
+    rm -f "$src"
+    return 1
   fi
+  # macOS 用 -X 不带扩展属性复制, 避免在 exFAT 等外置盘生成 ._ 伴生垃圾文件
+  if [ "$IS_MAC" = "1" ]; then
+    cp -X "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
+  else
+    cp "$src" "$dst"
+  fi
+  if valid_pdf "$dst"; then rm -f "$src"; return 0; fi
   return 1
 }
 
-OK_COUNT=0; FAIL_LIST=""; NO_DATA_LIST=""
+# ---------- 自动登录（老板 2026-09-19 亲授）----------
+# 理杏仁登录态会过期/丢失。此时【不要换数据源】(曾因此绕去东方财富/巨潮/上交所/新浪全部碰壁),
+# 正确做法: 点击页面右上角「登录/注册」—— 账号密码已保存在浏览器里, 点一下即自动登录。
+login_if_needed() {
+  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_login.txt 2>&1
+  if ! grep -q "登录/注册" /tmp/.lx_login.txt; then
+    echo "  ✅ 理杏仁已登录"
+    return 0
+  fi
+  echo "  🔑 未登录 → 点击右上角「登录/注册」(浏览器已保存账号密码)"
+  "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录/注册" --action click >/dev/null 2>&1
+  "$CLI" browser_wait --sessionId "$SID" --seconds 4 >/dev/null 2>&1
+  # 若弹出登录弹窗且有「登录」按钮(表单已由浏览器自动填充), 再点一次提交
+  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_login2.txt 2>&1
+  if grep -qE "\[[0-9]+_[a-z0-9_]+\]<button 登录" /tmp/.lx_login2.txt; then
+    "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录" --action click >/dev/null 2>&1
+    "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
+  fi
+  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_login3.txt 2>&1
+  if grep -q "登录/注册" /tmp/.lx_login3.txt; then
+    echo "  ⚠️ 自动登录未生效 → 请在浏览器里手动登录一次后重跑"
+    return 1
+  fi
+  echo "  ✅ 自动登录成功"
+  return 0
+}
+
+OK_COUNT=0; SKIP_COUNT=0; FAIL_LIST=""; NO_DATA_LIST=""; HSHARE_LIST=""
 
 echo "=========================================="
 echo " 理杏仁下载: $NAME ($MARKET$CODE)"
 echo " 时间范围: $START_DATE ~ $END_DATE (${YEARS}年)"
 echo " 输出目录: $COMPANY_DIR"
 echo "=========================================="
-
-# ---------- 公司名正则转义 ----------
-NAME_RE=$(escape_re "$NAME")
 
 # ---------- 开会话 ----------
 # 任何异常退出都关会话, 防浏览器 tab 泄漏
@@ -133,6 +190,8 @@ cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
 "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
 trap cleanup EXIT INT TERM
 log "✅ 会话已开启"
+# 登录态自检: 过期就自动点一下登录(浏览器已保存账号密码), 不要换数据源
+login_if_needed || true
 
 # ============================================================
 # 第一部分: 6 类 CSV 导出（标准流程）
@@ -232,8 +291,8 @@ try:
     years = data[0][1:]
     rows = [[r[0]] + [r[1+i*2].replace(',','') if 1+i*2 < len(r) else '' for i in range(len(years))]
             for r in data[2:] if r and r[0]]
-    ts = datetime.datetime.now().strftime('%Y%m%d')
-    out = os.path.join(outdir, f'{name}_员工数据_全体员工_{ts}.csv')
+    # 命名对齐老板规范(无日期, 覆盖式): 带日期会导致跨天重复堆积
+    out = os.path.join(outdir, f'{name}_员工数据_全体员工.csv')
     with open(out,'w',newline='',encoding='utf-8-sig') as f:
         w = csv.writer(f); w.writerow(['指标']+years); w.writerows(rows)
     print(f'  ✅ {os.path.basename(out)}  ({len(rows)}个指标 × {len(years)}年)')
@@ -265,43 +324,87 @@ ANN_URL="${PREFIX}/announcement?search-key=%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A"
 "$CLI" browser_scroll_to_bottom --sessionId "$SID" >/dev/null 2>&1  # 先触发懒加载
 "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
 : > /tmp/.lx_annual.txt
-for _pos in 0 700 1400 2100 2800 3500 4200 4900; do
+# 滚动范围必须覆盖整份公告列表: 只滚到 4900px 时, 列表长的公司(如华能国际)
+# 深处年份的条目抓不到 → 实测漏掉 2023/2024 两年
+for _pos in 0 600 1200 1800 2400 3000 3600 4200 4800 5400 6000 6600 7200 7800 8400 9000 9600 10200 10800 11400 12000; do
   "$CLI" browser_eval_content_js --sessionId "$SID" \
     --script "window.scrollTo(0,${_pos});'ok'" >/dev/null 2>&1
   "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
   "$CLI" browser_snapshot --sessionId "$SID" >> /tmp/.lx_annual.txt 2>&1
 done
 
-# 精确匹配: 公司名+YYYY年年度报告 (排除"摘要"/"半年度")
-PDF_LINES=()
-while IFS= read -r line; do
-  [ -n "$line" ] && PDF_LINES+=("$line")
-# 兼容简称/全称混用: 同一公司不同年份的公告标题可能用简称(中国核电)也可能用全称(中国核能电力股份有限公司),
-# 故公司名部分用 [^/>]* 通配, 不能写死 ${NAME} —— 否则全称标题的年份会整年漏掉(实测漏 2021/2022/2024)
-# 靠 "YYYY年年度报告/>points to a pdf"(紧邻 />) 同时排除「摘要」与「半年度报告」
-done < <(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}年年度报告/>points to a pdf" /tmp/.lx_annual.txt | sort -u)
-echo "  发现 ${#PDF_LINES[@]} 个年报链接"
+# 精确匹配年报链接（排除「摘要」「半年度报告」）
+# ⚠️ 关键教训(2026-09-19 实测, 华能国际 sh600011):
+#   理杏仁上同一份年报可能有两个条目 —— A股正文标题带后缀「…年度报告全文」,
+#   而 H 股版本标题为「华能国际H股2022年年度报告」(无后缀, 繁体)。
+#   旧正则写死 [0-9]{4}年年度报告/> (要求"年度报告"后紧跟结束符) 会同时踩两个坑:
+#     ① 「…全文」被排除 → 该年份整年漏抓(实测漏 2023/2024);
+#     ② 反而只抓到 H 股繁体版(实测 2022 抓成 12.2MB 的 H 股版, A股全文仅 6.7MB)。
+#   正确做法: 优先取「全文」版, 无「全文」版时才回退到无后缀版。
+# 公司名部分仍用 [^/>]* 通配(兼容简称/全称混用, 如 中国核电 vs 中国核能电力股份有限公司)
+FULL_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}年年度报告全文/>points to a pdf"
+PLAIN_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}年年度报告/>points to a pdf"
+grep -oE "$FULL_RE"  /tmp/.lx_annual.txt | sort -u > /tmp/.lx_pdf_full.txt
+grep -oE "$PLAIN_RE" /tmp/.lx_annual.txt | sort -u > /tmp/.lx_pdf_plain.txt
+# 候选年份 = 两轮命中合并去重(天然去掉多屏重复, 不再需要 DONE_YEARS 守卫)
+YEARS_ALL=$( { cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt; } \
+             | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | sort -u )
+echo "  发现 $(cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt | wc -l | tr -d ' ') 个年报链接, 覆盖年份: $(echo $YEARS_ALL | tr '\n' ' ')"
 
 START_YEAR=$(( $(date +%Y) - YEARS ))
 # bash 3.2 + set -u 下空数组展开会崩(unbound variable), 必须守卫
-if [ "${#PDF_LINES[@]}" -eq 0 ]; then
+if [ -z "$YEARS_ALL" ]; then
   echo "  ⚠️  公告页未匹配到年报链接, 跳过PDF阶段(不中断后续)"
 else
-DONE_YEARS=""
-for line in "${PDF_LINES[@]}"; do
-  IDX=$(echo "$line" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
-  YEAR=$(echo "$line" | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}')
-  if [ -z "$IDX" ] || [ -z "$YEAR" ]; then
-    continue
+HSHARE_LIST=""   # 记录"只有 H 股版可用"的年份, 汇总时告警
+for YEAR in $YEARS_ALL; do
+  # --only-years 过滤（精准补漏/换版, 避免整家重跑）
+  if [ -n "$ONLY_YEARS" ]; then
+    case "$ONLY_YEARS" in
+      *",${YEAR},"*) : ;;
+      *) continue ;;
+    esac
   fi
-  # 按年份去重: 多屏采集时同一年报可能在多个视口重复出现
-  case " $DONE_YEARS " in
-    *" $YEAR "*) continue;;
-  esac
-  DONE_YEARS="$DONE_YEARS $YEAR"
   if [ "$YEAR" -lt "$START_YEAR" ]; then
     echo "  ⏭️  ${YEAR}年(超出${YEARS}年范围, 起点${START_YEAR}) 跳过"
     continue
+  fi
+
+  # 版本优先级（老板 2026-09-19 要求: A+H 公司优先 A 股）:
+  #   ① A股「…年度报告全文」(简体正文)  →  ② A股无后缀版  →  ③ 才轮到 H股繁体版
+  # 华能国际 2020 同时有「H股2020年年度报告」与「2020年年度报告」两个条目,
+  # 旧逻辑 sort 后 head -1 抓到排前的 H 股版(实测 2020/2021/2022 三年均为繁体版)
+  VER=""
+  LINE=$(grep "${YEAR}年年度报告全文" /tmp/.lx_pdf_full.txt | head -1)
+  [ -n "$LINE" ] && VER="A股全文"
+  if [ -z "$LINE" ]; then
+    LINE=$(grep "${YEAR}年年度报告" /tmp/.lx_pdf_plain.txt | grep -vE "H[ ]?股" | head -1)
+    [ -n "$LINE" ] && VER="A股"
+  fi
+  if [ -z "$LINE" ]; then
+    LINE=$(grep "${YEAR}年年度报告" /tmp/.lx_pdf_plain.txt | head -1)
+    [ -n "$LINE" ] && VER="H股繁体"
+  fi
+  IDX=$(echo "$LINE" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
+  if [ -z "$IDX" ]; then
+    continue
+  fi
+
+  # 幂等: 目标已存在且校验通过 → 跳过, 绝不重复下载有效文件。
+  # (老板 2026-09-19 明确要求: 补漏只下缺失/损坏的年份, 不许整家重下)
+  DST="$PDF_DIR/${NAME}_${YEAR}年年度报告.pdf"
+  if [ "$FORCE" -eq 0 ] && valid_pdf "$DST"; then
+    echo "  ⏭️  ${YEAR}年 已存在且校验通过($(fsize "$DST")B), 跳过"
+    SKIP_COUNT=$((SKIP_COUNT+1)); continue
+  fi
+  if [ -f "$DST" ]; then
+    # 区分两种情况, 别把 --force 的版本升级误报成"文件损坏"
+    if valid_pdf "$DST"; then
+      echo "  🔄 ${YEAR}年 --force 覆盖现有有效文件($(fsize "$DST")B)"
+    else
+      echo "  🔄 ${YEAR}年 现有文件损坏($(fsize "$DST")B), 重新下载"
+    fi
+    rm -f "$DST"   # 先清掉旧文件, 避免下载失败时留下假文件
   fi
 
   snap_new_file "\.pdf$"
@@ -314,8 +417,9 @@ for line in "${PDF_LINES[@]}"; do
     [ -n "$NEW" ] && break
   done
   if [ -n "$NEW" ]; then
-    if archive "$NEW" "$PDF_DIR/${NAME}_${YEAR}年年度报告.pdf"; then
-      echo "  ✅ ${YEAR}年年度报告.pdf"
+    if archive "$NEW" "$DST"; then
+      echo "  ✅ ${YEAR}年年度报告.pdf  [$VER]"
+      [ "$VER" = "H股繁体" ] && HSHARE_LIST="$HSHARE_LIST $YEAR"
       OK_COUNT=$((OK_COUNT+1))
     else
       echo "  ❌ 归档失败 ${YEAR}年"; FAIL_LIST="$FAIL_LIST PDF${YEAR}"
@@ -359,8 +463,10 @@ fi
 echo "=========================================="
 echo " 完成: $NAME"
 echo " 成功 $OK_COUNT 个文件"
+[ "$SKIP_COUNT" -gt 0 ] && echo " ⏭️跳过(已存在且有效) $SKIP_COUNT 个"
 [ -n "$FAIL_LIST" ] && echo " ❌失败项:$FAIL_LIST"
 [ -n "$NO_DATA_LIST" ] && echo " ⏭️理杏仁未收录(数据源缺失,非故障):$NO_DATA_LIST"
+[ -n "$HSHARE_LIST" ] && echo " ⚠️这些年份仅H股可用(A股未收录,繁体版):$HSHARE_LIST"
 echo " 目录: $COMPANY_DIR"
 echo "   PDF: $(ls -1 "$PDF_DIR" 2>/dev/null | wc -l | tr -d ' ') 个"
 echo "   CSV: $(ls -1 "$COMPANY_DIR"/*.csv 2>/dev/null | wc -l | tr -d ' ') 个"
