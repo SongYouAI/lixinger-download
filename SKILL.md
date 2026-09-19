@@ -185,9 +185,10 @@ CSV 数、年报 PDF 数与年份连续性、是否有 `._` 垃圾、根目录�
 |---|---|---|
 | 1 | **重跑该家 PDF 段** `download_company.sh --skip-csv` | 散缺个别年份、偶发下载失灵 |
 | 2 | **港交所 hkexnews API** | 港股公司、A 股上市前年份、整段 0 份的公司 |
-| 3 | 抓公告页 href + **浏览器**直下 | 单个失败年份（**curl 会被防盗链拒，必须走浏览器**）|
-| ✗ | curl 直下交易所链接 | `static.sse.com.cn` / `disc.static.szse.cn` 有防盗链，必失败 |
-| ✗ | 巨潮 cninfo API | `new/hisAnnouncement/query` 当前返回空，不可用 |
+| 3 | 抓公告页 href + **浏览器**直下 | 单个失败年份（curl 会被防盗链拒，必须走浏览器）|
+| 4 | **上交所 `queryCompanyBulletinNew.do` API 取直链 + 浏览器导航下载** | **lixinger 登录失效时**补上交所 A股 年报（详见下方「上交所直链补漏」）|
+| ✗ | curl 直下交易所 PDF | `static.sse.com.cn` 有防盗链，curl 拿到的是 **3872B 空壳**；但**浏览器导航到直链可绕过**（Content-Disposition 触发下载）|
+| ✗ | 巨潮 cninfo API | `new/hisAnnouncement/query` 当前返回 500，不可用 |
 
 **完整决策树（按失败现象分支）→ `references/04-batch-playbook.md` 第四节**
 
@@ -209,6 +210,31 @@ curl -s "https://www1.hkexnews.hk/search/titleSearchServlet.do?sortDir=0&sortByO
 # 返回 {"result":"[...]"}（需二次 json.loads），取 FILE_LINK 拼 https://www1.hkexnews.hk 前缀
 ```
 > 港股年报为繁体中文版，命名仍统一为 `{公司名}_{YYYY}年年度报告.pdf`。
+
+### 上交所直链补漏（lixinger 登录失效时，2026-09 实测可用）
+
+lixinger 登录态偶发丢失（浏览器会话不持久化 cookie），此时 A股 年报无法走原流程。
+改走**上交所官方 API 取直链 + 浏览器导航下载**，全程免费、无需登录：
+
+1. **取直链**（curl 即可，关键是带 Referer，否则 403）：
+```
+https://query.sse.com.cn/security/stock/queryCompanyBulletinNew.do?isPagination=true
+  &productId={6位代码}&securityCode={代码}&SECURITY_CODE={代码}
+  &beginDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+  &pageHelp.pageSize=50&pageHelp.pageNo=N
+```
+  请求头必须带 `Referer: https://www.sse.com.cn/disclosure/listedinfo/announcement/`。
+2. **解析**：返回 `result` 是「公告组」数组，每组含若干变体，变体字段 `TITLE` + `ORG_FILE_TYPE`(0=摘要,1=全文) + 相对 `URL`。
+   拼 `https://static.sse.com.cn` + `URL` 即 PDF 直链。
+   匹配标题含「`YYYY`年年度报告」、排除「摘要/半年度/H股」；分页拉全（按日期倒序，老年报在后面页）。
+3. **下载绕过防盗链**：直链 **curl 必拿到 3872B 空壳**（static.sse.com.cn 防盗链）。
+   正确做法是用 qqbrowser-skill 让**浏览器导航到直链**触发下载：
+   `browser_go_to_url --sessionId <SID> --url <直链>` → 浏览器按 Content-Disposition 把 PDF 存到 `~/Downloads`。
+   ⚠️ `browser_download_url` **没有 URL 参数**（定义里无 params），不可用；只能 `browser_go_to_url` 导航触发。
+4. **校验**：落盘后查 `%PDF-` 头 + 大小 >1MB，再 `cp -X`（不带 xattr，避免 exFAT 生成 `._`）归档到 `年报PDF/`。
+
+> 实测：华能国际 2023/2024、三峡能源 2025 三个此前 3872B 空壳，均用此法从 `static.sse.com.cn` 补回真实 PDF（7.0/6.7/2.5 MB）。
+> **2025 年报发布于 2026**，beginDate 要放宽到 2026 才能命中（同 hkexnews 的 toDate 放宽逻辑）。
 
 ### 招股说明书 / 招股意向书 —— 必须走「IPO 分类」，别用 search-key
 
