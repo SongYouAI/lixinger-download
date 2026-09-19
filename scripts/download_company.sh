@@ -146,6 +146,48 @@ archive() {  # $1=源文件名(basename) $2=目标完整路径
   return 1
 }
 
+# ---------- 下载目录快照（纳入 .crdownload；与 download_ipo.sh 同款修复）----------
+# 教训(2026-09-19 实测): 深交所等来源的 PDF 下载完成后, 浏览器【不会改名】,
+#   而是留成「未确认 NNNNNN.crdownload」。只认 *.pdf 会 ① 漏抓 ② 文件永久堆在下载目录
+#   (实测一次批量堆了 73 个 / 266MB)。判定「已下载完」用【体积停止增长】(下载中会持续变大),
+#   不用 %%EOF —— 实测本数据集 209 份正常 PDF 里有 22 份根本没有 %%EOF, 拿它当门槛会误判。
+# ⚠️ 也不要写成 `stat -f '%z %N'`: BSD(macOS) 的 -f 是「文件系统模式」, 会输出 Inodes 之类的
+#    文件系统信息而非文件名。这里复用已验证的 fsize()。
+snap_dl() {
+  local f lc sz
+  for f in "$DOWNLOADS"/*; do
+    [ -f "$f" ] || continue
+    lc=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
+    case "$lc" in
+      *.pdf|*.crdownload) ;;
+      *) continue ;;
+    esac
+    sz=$(fsize "$f")
+    printf '%s %s\n' "$sz" "$(basename "$f")"
+  done | sort
+}
+new_pdf_line() { comm -13 "$1" "$2" 2>/dev/null | grep -iE '\.pdf$' | head -1 | sed -E 's/^[0-9]+ //'; }
+new_cr_line()  { comm -13 "$1" "$2" 2>/dev/null | grep -iE '\.crdownload$' | sort -k1,1n | tail -1; }
+# 等待本次下载落定(返回文件名到 DL_NEW); $1=最长轮次(每轮2s)
+wait_download() {
+  local maxr="${1:-25}" i cr cand
+  DL_NEW=""; local prev_cr=""
+  for i in $(seq 1 "$maxr"); do
+    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
+    snap_dl > /tmp/.lx_dl_after.txt
+    DL_NEW=$(new_pdf_line /tmp/.lx_dl_before.txt /tmp/.lx_dl_after.txt)
+    [ -n "$DL_NEW" ] && return 0
+    cr=$(new_cr_line /tmp/.lx_dl_before.txt /tmp/.lx_dl_after.txt)
+    if [ -n "$cr" ] && [ "$cr" = "$prev_cr" ]; then
+      cand=$(printf '%s' "$cr" | sed -E 's/^[0-9]+ //')
+      if [ "$(head -c 5 "$DOWNLOADS/$cand" 2>/dev/null)" = "%PDF-" ]; then DL_NEW="$cand"; return 0; fi
+    fi
+    prev_cr="$cr"
+    if [ "$i" -eq 8 ] && [ -z "$cr" ]; then return 1; fi   # 16s 内毫无动静 → 下载未触发
+  done
+  return 1
+}
+
 # ---------- 自动登录（老板 2026-09-19 亲授）----------
 # 理杏仁登录态会过期/丢失。此时【不要换数据源】(曾因此绕去东方财富/巨潮/上交所/新浪全部碰壁),
 # 正确做法: 点击页面右上角「登录/注册」—— 账号密码已保存在浏览器里, 点一下即自动登录。
@@ -407,14 +449,16 @@ for YEAR in $YEARS_ALL; do
     rm -f "$DST"   # 先清掉旧文件, 避免下载失败时留下假文件
   fi
 
-  snap_new_file "\.pdf$"
-  "$CLI" browser_download_file --sessionId "$SID" --index "$IDX" >/dev/null 2>&1
-  # 轮询等待: 大PDF超过固定等待, 每2s检测一次, 最多20s
-  NEW=""
-  for _w in 1 2 3 4 5 6 7 8 9 10; do
-    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-    NEW=$(take_new_file "\.pdf$")
-    [ -n "$NEW" ] && break
+  # 轮询等待(最多50s/次): 大PDF + 「未确认 NNNNNN.crdownload」定型都需要时间
+  # 实测(2026-09-19): 每个会话的【第一条】下载经常不触发(浏览器需热身) → 失败自动重试 3 次
+  NEW=""; ATTEMPT=0
+  while [ "$ATTEMPT" -lt 3 ]; do
+    ATTEMPT=$((ATTEMPT+1))
+    snap_dl > /tmp/.lx_dl_before.txt
+    "$CLI" browser_download_file --sessionId "$SID" --index "$IDX" >/dev/null 2>&1
+    if wait_download 25; then NEW="$DL_NEW"; break; fi
+    NEW=""
+    [ "$ATTEMPT" -lt 3 ] && echo "  🔁 ${YEAR}年 未触发下载, 重试(${ATTEMPT}/3)…"
   done
   if [ -n "$NEW" ]; then
     if archive "$NEW" "$DST"; then
