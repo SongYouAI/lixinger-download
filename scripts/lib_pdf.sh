@@ -19,7 +19,12 @@
 #   （PDF 规范允许增量更新等形态）→ 所以 ③ 只做"加分项"，绝不做"硬门槛"。
 # ============================================================
 
+# ---------- 基础原语（全 skill 只此一份实现，其余脚本/库一律薄封装调用）----------
 _pdf_fsize() { if [ "${IS_MAC:-0}" = "1" ]; then stat -f%z "$1" 2>/dev/null; else stat -c%s "$1" 2>/dev/null; fi; }
+_pdf_md5()   { if [ "${IS_MAC:-0}" = "1" ]; then md5 -q "$1" 2>/dev/null; else md5sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
+# 公开别名（供 lib_orphans.sh 与两个脚本使用）
+pdf_fsize() { _pdf_fsize "$1"; }
+pdf_md5()   { _pdf_md5 "$1"; }
 
 # ① 文件头是 PDF
 pdf_head_ok() {

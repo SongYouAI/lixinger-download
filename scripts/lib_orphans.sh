@@ -29,8 +29,10 @@ ORPHAN_DIR="${LIXINGER_ORPHAN_DIR:-$HOME/Library/Caches/lixinger-download/orphan
 ORPHAN_GLOB_ZH="未确认*.crdownload"
 ORPHAN_GLOB_EN="Unconfirmed*.crdownload"
 
-_orph_fsize() { if [ "${IS_MAC:-0}" = "1" ]; then stat -f%z "$1" 2>/dev/null; else stat -c%s "$1" 2>/dev/null; fi; }
-_orph_md5()   { if [ "${IS_MAC:-0}" = "1" ]; then md5 -q "$1" 2>/dev/null; else md5sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
+# 体积/md5 的实现统一在 lib_pdf.sh（全 skill 只此一份），这里只做薄封装。
+# ⚠️ 本库必须与 lib_pdf.sh 一起 source（两个下载脚本都已这么做）。
+_orph_fsize() { pdf_fsize "$1"; }
+_orph_md5()   { pdf_md5 "$1"; }
 
 # 列出下载目录里的孤儿（只认「未确认*/Unconfirmed*」模式；含空格文件名用 NUL 分隔安全遍历）
 list_orphans() {

@@ -92,16 +92,10 @@ mkdir -p "$COMPANY_DIR" "$IPO_DIR"
 
 # ---------- 空壳校验（同 download_company.sh 的机制）----------
 MIN_PDF_BYTES="${MIN_PDF_BYTES:-10240}"   # 招股文件有的仅几十 KB, 阈值放到 10KB
-fsize() { if [ "$IS_MAC" = "1" ]; then stat -f%z "$1" 2>/dev/null; else stat -c%s "$1" 2>/dev/null; fi; }
-valid_pdf() {
-  local f="$1"; local sz hdr
-  [ -f "$f" ] || return 1
-  sz=$(fsize "$f"); [ -n "$sz" ] || return 1
-  [ "$sz" -ge "$MIN_PDF_BYTES" ] || return 1
-  hdr=$(head -c 5 "$f" 2>/dev/null)
-  [ "$hdr" = "%PDF-" ] || return 1
-  return 0
-}
+# 实现统一在 lib_pdf.sh（全 skill 一份），这里只做薄封装，避免两处走样
+fsize()     { pdf_fsize "$1"; }
+md5_p()     { pdf_md5 "$1"; }
+valid_pdf() { pdf_acceptable "$1" "$MIN_PDF_BYTES"; }
 archive() {
   local src="$DOWNLOADS/$1"; local dst="$2"
   [ -f "$src" ] || return 1
@@ -277,7 +271,7 @@ snap_dl() {
 new_lines() { comm -13 "$1" "$2" 2>/dev/null; }               # 相对上一快照的新增行(体积+名)
 new_pdf()   { new_lines "$1" "$2" | grep -iE '\.pdf$' | head -1 | sed -E 's/^[0-9]+ //'; }
 new_cr()    { new_lines "$1" "$2" | grep -iE '\.crdownload$' | sort -k1,1n | tail -1; }
-md5_p() { if [ "$IS_MAC" = "1" ]; then md5 -q "$1" 2>/dev/null; else md5sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
+# md5_p / fsize / valid_pdf 见上方「空壳校验」段（统一封装到 lib_pdf.sh）
 # 下载落地垃圾治理（清理同内容孤儿 / 隔离剩余孤儿）统一在 scripts/lib_orphans.sh：
 #   delete_twin_orphans <参照文件...>  — 与已入库文件逐字节相同的孤儿直接删（零信息损失）
 #   relocate_orphans                   — 其余「未确认*.crdownload」移动到专用暂存目录，不留在他下载目录

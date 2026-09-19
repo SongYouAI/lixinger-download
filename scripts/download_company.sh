@@ -123,16 +123,10 @@ take_new_file() {  # 与 snap_new_file 配对, 输出新增文件
 # 背景: 脚本曾静默产出 3872 字节空壳 PDF(有文件名、打不开), 老板误以为"下载成功"。
 # 判定必须同时看【文件头 %PDF-】和【体积】, 只看"文件存在"必然漏判。
 MIN_PDF_BYTES="${MIN_PDF_BYTES:-102400}"   # 100KB; 正常年报至少 1MB+, 低于此即空壳/半截
-fsize() { if [ "$IS_MAC" = "1" ]; then stat -f%z "$1" 2>/dev/null; else stat -c%s "$1" 2>/dev/null; fi; }
-valid_pdf() {  # $1=路径; 有效返回 0, 空壳/损坏返回 1
-  local f="$1"; local sz hdr
-  [ -f "$f" ] || return 1
-  sz=$(fsize "$f"); [ -n "$sz" ] || return 1
-  [ "$sz" -ge "$MIN_PDF_BYTES" ] || return 1
-  hdr=$(head -c 5 "$f" 2>/dev/null)
-  [ "$hdr" = "%PDF-" ] || return 1
-  return 0
-}
+# 实现统一在 lib_pdf.sh（全 skill 一份），这里只做薄封装，避免两处走样
+fsize()     { pdf_fsize "$1"; }
+md5_p()     { pdf_md5 "$1"; }
+valid_pdf() { pdf_acceptable "$1" "$MIN_PDF_BYTES"; }   # $1=路径; 有效返回 0, 空壳/损坏返回 1
 archive() {  # $1=源文件名(basename) $2=目标完整路径
   local src="$DOWNLOADS/$1"; local dst="$2"
   if [ ! -f "$src" ]; then return 1; fi
@@ -465,20 +459,63 @@ ann_ready() {
 }
 ann_ready || true
 
-# 分段滚动 + 多次快照合并:
-# snapshot 只捕获"视口内"元素, 单次滚到底会让视口停在页面底部,
-# 顶部/中间的年报就会漏掉(年报条目多的公司必踩) → 必须分段滚动逐屏采集
-"$CLI" browser_scroll_to_bottom --sessionId "$SID" >/dev/null 2>&1  # 先触发懒加载
-"$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-: > /tmp/.lx_annual.txt
-# 滚动范围必须覆盖整份公告列表: 只滚到 4900px 时, 列表长的公司(如华能国际)
-# 深处年份的条目抓不到 → 实测漏掉 2023/2024 两年
-for _pos in 0 600 1200 1800 2400 3000 3600 4200 4800 5400 6000 6600 7200 7800 8400 9000 9600 10200 10800 11400 12000; do
+# ---------- 🔴 逐页采集（2026-09-20 修复：公告列表是"最新在前 + 分页"）----------
+# 实测: 华能国际公告共 24 页，【一页约等于一年】—— 第1页 2025 年、第2页 2024 年 ……
+#   旧版只采第 1 页 → 「发现 1 个年报链接, 覆盖年份: 2025」→ **静默漏抓 9 年**。
+# 分页条 DOM: `ul.pagination` → 末项 `li.page-item > span.page-link` 文本为 `›`（下一页）。
+#   点击实测有效(两种方式都行): `browser_find_and_act --by text --value "›" --action click`，
+#   或用 JS 点最后一个 li（页码 1→2→3 均验证通过）。
+# ⚠️ 页面上的「年度报告」分类按钮点了**不生效**（实测年份不变），别指望它筛选。
+# 停止条件（任一）: ① 已覆盖到 START_YEAR（够用了，不用翻满）② 到 MAX_PAGES ③ 点不动了
+MAX_PAGES="${MAX_PAGES:-16}"
+START_YEAR=$(( $(date +%Y) - YEARS ))   # 翻页停止判据要用, 必须在采集前算出来
+ann_active_page() {
   "$CLI" browser_eval_content_js --sessionId "$SID" \
-    --script "window.scrollTo(0,${_pos});'ok'" >/dev/null 2>&1
-  "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
-  "$CLI" browser_snapshot --sessionId "$SID" >> /tmp/.lx_annual.txt 2>&1
+    --script "(()=>{const a=document.querySelector('ul.pagination li.active');return 'PAGE='+(a?a.textContent.trim():'-')})()" 2>/dev/null \
+    | grep -oE 'PAGE=[0-9]+' | head -1 | cut -d= -f2
+}
+# 滚动整页并合并快照: 步长按视口重叠覆盖, 范围用实际页高(不再写死 12000)
+collect_page() {
+  local h pos step=700
+  h=$("$CLI" browser_eval_content_js --sessionId "$SID" --script "document.body.scrollHeight" 2>/dev/null \
+      | grep -oE '[0-9]+' | head -1)
+  [ -z "$h" ] && h=12000
+  pos=0
+  while [ "$pos" -le "$h" ]; do
+    "$CLI" browser_eval_content_js --sessionId "$SID" \
+      --script "window.scrollTo(0,${pos});'ok'" >/dev/null 2>&1
+    "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
+    "$CLI" browser_snapshot --sessionId "$SID" >> /tmp/.lx_annual.txt 2>&1
+    pos=$((pos+step))
+  done
+}
+: > /tmp/.lx_annual.txt
+PAGE_NO=1
+while [ "$PAGE_NO" -le "$MAX_PAGES" ]; do
+  collect_page
+  # 已覆盖到起始年份 → 收工(不必翻满)
+  OLDY=$( { cat /tmp/.lx_annual.txt; } \
+          | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | sort -n | head -1 )
+  if [ -n "$OLDY" ] && [ "$OLDY" -le "$START_YEAR" ] 2>/dev/null; then
+    echo "  ✅ 已覆盖到 ${OLDY}年(需 ${START_YEAR}年起)，停止翻页"
+    break
+  fi
+  BEF=$(ann_active_page)
+  "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "›" --action click >/dev/null 2>&1
+  AFT=""; CHANGED=0
+  for _w in 1 2 3 4 5 6; do
+    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
+    AFT=$(ann_active_page)
+    if [ -n "$AFT" ] && [ "$AFT" != "$BEF" ]; then CHANGED=1; break; fi
+  done
+  if [ "$CHANGED" -eq 0 ]; then
+    echo "  ⏭️  已到最后一页(第 ${BEF:-?} 页)，停止翻页"
+    break
+  fi
+  PAGE_NO=$((PAGE_NO+1))
+  echo "  📄 翻到第 ${AFT} 页(已采分钟级累积快照)"
 done
+echo "  📄 共采集 ${PAGE_NO} 页"
 
 # 精确匹配年报链接（排除「摘要」「半年度报告」）
 # ⚠️ 关键教训(2026-09-19 实测, 华能国际 sh600011):
