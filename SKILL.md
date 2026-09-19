@@ -294,11 +294,29 @@ done
 （`file -b` 判定为 `PDF document, version 1.5, 46 pages`）。
 脚本若只 `grep "\.pdf$"`，就会 ① 把这些当"未下载成功"而**漏抓**，② 文件永久堆积。
 
-**对策**（已内置 `snap_dl` / `wait_download`）：
-- 下载快照**同时纳入 `*.pdf` 与 `*.crdownload`**；
-- 判定 `.crdownload` 已下载完的依据是**体积停止增长**（下载中会持续变大），
-  外加文件头为 `%PDF-`；
-- 归档成功后源文件自动删除 → 顺手把下载目录清干净。
+**对策**（已内置 `scripts/lib_orphans.sh`，两个下载脚本共用）——三级治理，全部零信息损失：
+
+| 级别 | 函数 | 行为 |
+|---|---|---|
+| ① **同内容即删** | `delete_twin_orphans` | 孤儿与**已入库文件**逐字节相同 → 直接删（内容已在库中，纯冗余） |
+| ② **隔离搬运** | `relocate_orphans` | 其余「未确认*.crdownload」一律**移动**到暂存目录，不再留在他的下载目录 |
+| ③ **暂存自管** | `relocate_orphans` | 暂存内同内容去重 + 超期（默认 7 天）自动清，不会无限增长 |
+
+- 调用时机：**开跑前**（`delete_twin_orphans_under "$DEST"` 跨公司比对 + `relocate_orphans`）、
+  **每次归档后**（`delete_twin_orphans "$DST"`）、**收尾**（`relocate_orphans` 兜底）。
+- 比对范围取 `--dest`（数据集组目录）→ **跨公司**识别；实测很多孤儿其实是**别家**已入库文件的副本。
+- 性能：只按**体积**建索引（`stat`），仅对同体积候选做 md5 —— 不给几 GB 的年报全量哈希。
+- 🔴 **只认「未确认*/Unconfirmed*.crdownload」这一种模式**，老板自己的正常下载（如 `报表.xlsx.crdownload`）
+  **绝不触碰**。（旧版按 mtime 删本次会话产生的 `*.crdownload` —— 会误伤他同时进行的下载，已废弃。）
+- 暂存目录：`~/Library/Caches/lixinger-download/orphans`（**缓存性质**，可直接
+  `rm -rf` 整个目录；也可用 `LIXINGER_ORPHAN_DIR` / `LIXINGER_ORPHAN_KEEP_DAYS` 改路径与保留天数）。
+
+> ⚠️ **为什么不能改成 curl 直取以从源头根除？**（实测，别再试了）
+> - 上交所 `static.sse.com.cn`：返回 `content-type: text/html` + `x-tengine-error: denied by bot`，
+>   正文约 3870 字节；**带任何 Referer/User-Agent 都被拦** → 沪市必须走浏览器。
+> - 深交所 `disc.static.szse.cn`：反而能 curl 通（无防盗链）—— 但主流是沪市，绕不开。
+>
+> 因此垃圾**无法从"生成侧"根除**，只能在"落地侧"治理 → 即上面三级方案。
 
 **为什么不用 `%%EOF` 判完整性**：见上一节，22/209 的正常 PDF 没有它，会误判。
 **为什么不用 `stat -f '%z %N'` 做快照**：BSD(macOS) 的 `-f` 是「文件系统模式」，
@@ -541,6 +559,7 @@ WorkBuddy 后台 Bash 任务**跨会话会 `not found`**（隔夜后丢失）。
 | `references/04-batch-playbook.md` | **多公司批量时必读**——驱动脚本模板、验收盘点、**补漏决策树**、17 家实测结果表 |
 | `scripts/setup_env.sh` | 环境自检与一键安装 |
 | `scripts/download_company.sh` | 单公司完整下载主脚本（`--skip-csv` / `--skip-pdf` / `--only-years` / `--force`）|
-| `scripts/download_ipo.sh` | **招股/发行文件（IPO 分类）下载**——补全 `招股资料/`，幂等 |
+| `scripts/download_ipo.sh` | **招股/发行文件（IPO 分类）下载**——**必须带 `--include`（禁全量灌）**，幂等 |
+| `scripts/lib_orphans.sh` | **下载落地垃圾治理库**（两个下载脚本共用）：同内容孤儿删除 / 其余隔离到暂存目录 / 暂存去重与过期清理 |
 | `scripts/batch_download.sh` | **批量串行驱动**（读清单文件，逐家调用主脚本，日志 + 即时播报失败项）|
 | `scripts/companies.example.json` | 批量公司清单模板 |

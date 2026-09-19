@@ -74,10 +74,13 @@ else
   IS_MAC=0
   START_DATE=$(date -d "${YEARS} years ago" +%Y-%m-%d)
 fi
-SESSION_START=$(date +%s)   # 用于收尾时精准清理"本次产生的"临时文件
 END_DATE=$(date +%Y-%m-%d)
 QUERY="fs-owner-type=consolidated&start-date=${START_DATE}&end-date=${END_DATE}"
 PREFIX="${BASE}/${MARKET}/${CODE}/${CODE}"
+
+# 下载落地垃圾治理库（未确认*.crdownload 的隔离与同内容清理）
+# shellcheck source=lib_orphans.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib_orphans.sh"
 
 COMPANY_DIR="$DEST/$NAME"
 PDF_DIR="$COMPANY_DIR/年报PDF"
@@ -222,6 +225,13 @@ echo " 理杏仁下载: $NAME ($MARKET$CODE)"
 echo " 时间范围: $START_DATE ~ $END_DATE (${YEARS}年)"
 echo " 输出目录: $COMPANY_DIR"
 echo "=========================================="
+
+# ---------- 开跑前治理下载目录 ----------
+# 老板 2026-09-20: 要的是"别再脏我 Downloads"。
+# 范围取 $DEST（数据集组目录）跨公司比对 —— 很多孤儿其实是别家已入库文件的副本, 可直接删。
+echo "── 开跑前治理下载目录 ──"
+delete_twin_orphans_under "$DEST"
+relocate_orphans
 
 # ---------- 开会话 ----------
 # 任何异常退出都关会话, 防浏览器 tab 泄漏
@@ -465,6 +475,7 @@ for YEAR in $YEARS_ALL; do
       echo "  ✅ ${YEAR}年年度报告.pdf  [$VER]"
       [ "$VER" = "H股繁体" ] && HSHARE_LIST="$HSHARE_LIST $YEAR"
       OK_COUNT=$((OK_COUNT+1))
+      delete_twin_orphans "$DST"   # 顺手清掉与它同内容的「未确认*.crdownload」孤儿
     else
       echo "  ❌ 归档失败 ${YEAR}年"; FAIL_LIST="$FAIL_LIST PDF${YEAR}"
     fi
@@ -478,31 +489,29 @@ fi  # SKIP_PDF
 # ---------- 收尾 ----------
 "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1
 
-# 收尾清理: ①目标目录 ._ AppleDouble 垃圾文件  ②下载目录本次产生的 .crdownload 临时残留
+# 收尾清理: 目标目录 ._ AppleDouble 垃圾文件
 # ⚠️ 用自带 python 删除, 不用 dot_clean —— dot_clean 是外部二进制, 沙箱下会被拦截(unlink 被拒)
 if command -v python3 >/dev/null 2>&1; then
-python3 - "$COMPANY_DIR" "$DOWNLOADS" "$SESSION_START" <<'PY'
-import os, sys, glob
-cdir, ddir, start = sys.argv[1], sys.argv[2], int(sys.argv[3])
+python3 - "$COMPANY_DIR" <<'PY'
+import os, sys
 n1 = 0
-for root, dirs, files in os.walk(cdir):
+for root, dirs, files in os.walk(sys.argv[1]):
     for nm in list(files) + list(dirs):
         if nm.startswith('._'):
             try:
                 os.remove(os.path.join(root, nm)); n1 += 1
             except Exception:
                 pass
-n2 = 0
-for f in glob.glob(os.path.join(ddir, '*.crdownload')):
-    try:
-        if os.path.getmtime(f) >= start - 5:
-            os.remove(f); n2 += 1
-    except Exception:
-        pass
 if n1: print(f'  🧹 清理 ._ 垃圾文件 {n1} 个')
-if n2: print(f'  🧹 清理下载临时残留 {n2} 个')
 PY
 fi
+
+# 收尾治理下载目录: 把剩余的「未确认*.crdownload」一律【隔离】出他的下载目录（移动, 不删）
+# 同内容的已在"归档时"逐个清过, 这里只需隔离。
+# 注: 旧版按 mtime 删本次会话产生的 *.crdownload —— 会误伤老板同时进行的正常下载, 已废弃。
+relocate_orphans
+LEFT=$(list_orphans | grep -c . || true); LEFT=${LEFT:-0}
+[ "$LEFT" -gt 0 ] && echo " ⚠️ 仍有 ${LEFT} 个「未确认*.crdownload」留在下载目录(治理未生效), 请检查"
 
 echo "=========================================="
 echo " 完成: $NAME"

@@ -78,7 +78,10 @@ if [ ! -x "$CLI" ]; then
 fi
 
 if [ "$(uname -s)" = "Darwin" ]; then IS_MAC=1; else IS_MAC=0; fi
-SESSION_START=$(date +%s)
+
+# 下载落地垃圾治理库（未确认*.crdownload 的隔离与同内容清理）
+# shellcheck source=lib_orphans.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib_orphans.sh"
 PREFIX="${BASE}/${MARKET}/${CODE}/${CODE}"
 COMPANY_DIR="$DEST/$NAME"
 IPO_DIR="$COMPANY_DIR/招股资料"
@@ -136,26 +139,18 @@ echo "=========================================="
 
 cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
 
-# 收尾批量自净: 把下载目录里「与本公司在库文件逐字节相同」的「未确认 *.crdownload」孤儿删掉。
-# 规则同 clean_twin_crdownload: 先体积预筛, 再 md5 比对; 内容不同的一律保留。
-sweep_twin_crdownloads() {
-  local f sz h base cnt=0 sig=""
-  for f in "$IPO_DIR"/*.pdf "$COMPANY_DIR"/年报PDF/*.pdf; do
-    [ -f "$f" ] || continue
-    sig="$sig|$(fsize "$f"):$(md5_p "$f")|"
-  done
-  [ -z "$sig" ] && return 0
-  for f in "$DOWNLOADS"/*.crdownload; do
-    [ -f "$f" ] || continue
-    base=$(basename "$f")
-    case "$base" in 未确认*|Unconfirmed*) ;; *) continue ;; esac
-    sz=$(fsize "$f"); h=$(md5_p "$f")
-    case "$sig" in *"|${sz}:${h}|"*) rm -f "$f"; cnt=$((cnt+1)) ;; esac
-  done
-  [ "$cnt" -gt 0 ] && echo "  🧹 收尾自净: 清理同内容孤儿 .crdownload ${cnt} 个"
+# 开跑前先治理历史遗留: 先把「与数据集里任一在库文件逐字节相同」的孤儿删掉,
+# 再把剩下的一律隔离出他的下载目录（老板 2026-09-20: 要的是"别再脏我 Downloads"）。
+# 范围取 $DEST（数据集组目录），跨公司比对 —— 很多孤儿其实是别家已入库文件的副本。
+pre_clean_orphans() {
+  delete_twin_orphans_under "$DEST"
+  relocate_orphans
   return 0
 }
 trap cleanup EXIT INT TERM
+
+echo "── 开跑前治理下载目录 ──"
+pre_clean_orphans
 
 IPO_URL="${PREFIX}/announcement?announcement-type=ipo"
 HITS="/tmp/.lx_ipo_hits.txt"
@@ -280,24 +275,9 @@ new_lines() { comm -13 "$1" "$2" 2>/dev/null; }               # 相对上一快�
 new_pdf()   { new_lines "$1" "$2" | grep -iE '\.pdf$' | head -1 | sed -E 's/^[0-9]+ //'; }
 new_cr()    { new_lines "$1" "$2" | grep -iE '\.crdownload$' | sort -k1,1n | tail -1; }
 md5_p() { if [ "$IS_MAC" = "1" ]; then md5 -q "$1" 2>/dev/null; else md5sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
-# 自净: 删掉下载目录里与【刚归档文件】字节相同的「未确认 *.crdownload」孤儿。
-# 依据: ① 文件是自定义的未确认下载(非用户正常下载) ② 内容与已入库文件【逐字节相同】→ 删除零信息损失。
-# 反之, 内容不同的 crdownload 一律保留(可能是我们没拿到的那一份), 不碰。
-clean_twin_crdownload() {  # $1=刚归档的文件全路径
-  local newf="$1" sz f base h
-  sz=$(fsize "$newf"); [ -n "$sz" ] || return 0
-  h=$(md5_p "$newf"); [ -n "$h" ] || return 0
-  for f in "$DOWNLOADS"/*.crdownload; do
-    [ -f "$f" ] || continue
-    base=$(basename "$f")
-    case "$base" in 未确认*|Unconfirmed*) ;; *) continue ;; esac
-    [ "$(fsize "$f")" = "$sz" ] || continue
-    if [ "$(md5_p "$f")" = "$h" ]; then
-      rm -f "$f" && echo "  🧹 清理同内容残留: ${base}"
-    fi
-  done
-  return 0
-}
+# 下载落地垃圾治理（清理同内容孤儿 / 隔离剩余孤儿）统一在 scripts/lib_orphans.sh：
+#   delete_twin_orphans <参照文件...>  — 与已入库文件逐字节相同的孤儿直接删（零信息损失）
+#   relocate_orphans                   — 其余「未确认*.crdownload」移动到专用暂存目录，不留在他下载目录
 # 重名组内容自检: 同名条目靠 --index 下载时【可能拿回同一份】(实测中国广核 3 条里 2 条字节相同,
 #   而源站三份内容各异) → 这属于静默错内容, 必须报出来而不是装作成功。
 # 先用体积预筛(快), 只有同体积才做 md5。
@@ -410,7 +390,7 @@ while IFS= read -r line; do
     if archive "$NEW" "$DST"; then
       if [ "$IS_DUP" -eq 1 ]; then echo "  ✅ ${SAFE}(重名#${SEQ})"; else echo "  ✅ ${SAFE}"; fi
       OK_COUNT=$((OK_COUNT+1))
-      clean_twin_crdownload "$DST"
+      delete_twin_orphans "$DST"
       if [ "$IS_DUP" -eq 1 ] && check_dup_content "$DST"; then
         DUP_CONTENT="$DUP_CONTENT ${SAFE}#${SEQ}"
       fi
@@ -425,7 +405,6 @@ while IFS= read -r line; do
     fi
   fi
 done < "$HITS"
-sweep_twin_crdownloads
 fi
 
 cleanup
@@ -456,8 +435,15 @@ if [ "$COUNT" -gt 0 ] && [ "$DN" -lt "$COUNT" ]; then
 fi
 echo " 目录: $IPO_DIR"
 echo "   招股资料: $(ls -1 "$IPO_DIR" 2>/dev/null | grep -c '\.pdf$') 个"
-# 提示: 部分交易所的 PDF 可能以「未确认 NNNNNN.crdownload」残留在下载目录(未落成 .pdf)。
-# 仅【统计提示】, 不自动删除 —— 下载目录属于用户个人目录, 删除动作需用户确认。
-CR_LEFT=$(find "$DOWNLOADS" -maxdepth 1 -type f -iname '*.crdownload' 2>/dev/null | wc -l | tr -d ' ')
-[ "$CR_LEFT" -gt 0 ] && echo " ℹ️  下载目录尚有 ${CR_LEFT} 个 .crdownload 残留(未落盘), 需人工清理"
+# 收尾治理(无条件执行, 包括"0 条"的日子): 确保跑完他的下载目录里没有我们产生的残留。
+# 同内容的已在"归档时"逐个清过, 这里只需把剩余的一律隔离出去。
+relocate_orphans
+# 复查: 此刻下载目录里应当【一个我们的孤儿都没有】; 若有, 说明治理失败, 要报出来
+LEFT=$(list_orphans | grep -c . || true); LEFT=${LEFT:-0}
+if [ "$LEFT" -gt 0 ]; then
+  echo " ⚠️ 仍有 ${LEFT} 个「未确认*.crdownload」留在下载目录(治理未生效), 请检查"
+fi
+if [ -d "$ORPHAN_DIR" ]; then
+  echo " ℹ️  隔离暂存区: $(ls -1 "$ORPHAN_DIR" 2>/dev/null | grep -c . ) 个文件 → $ORPHAN_DIR（可直接整目录清理）"
+fi
 echo "=========================================="
