@@ -18,7 +18,8 @@
 # 产出:
 #   {dest}/{name}/
 #     ├── 年报PDF/{name}_{YYYY}年年度报告.pdf   (10年)
-#     └── {name}_{报表}_*.csv                   (7类, 10年)
+#     ├── 招股资料/...                            (IPO/发行文件)
+#     └── 理杏仁财报/{name}_{报表}_*.csv         (7类, 10年)
 # ============================================================
 set -uo pipefail
 
@@ -87,7 +88,8 @@ source "$(cd "$(dirname "$0")" && pwd)/lib_pdf.sh"
 
 COMPANY_DIR="$DEST/$NAME"
 PDF_DIR="$COMPANY_DIR/年报PDF"
-mkdir -p "$COMPANY_DIR" "$PDF_DIR"
+CSV_DIR="$COMPANY_DIR/理杏仁财报"
+mkdir -p "$COMPANY_DIR" "$PDF_DIR" "$CSV_DIR"
 
 # ---------- 工具函数 ----------
 log()  { echo "$1"; }
@@ -127,14 +129,110 @@ MIN_PDF_BYTES="${MIN_PDF_BYTES:-102400}"   # 100KB; 正常年报至少 1MB+, 低
 fsize()     { pdf_fsize "$1"; }
 md5_p()     { pdf_md5 "$1"; }
 valid_pdf() { pdf_acceptable "$1" "$MIN_PDF_BYTES"; }   # $1=路径; 有效返回 0, 空壳/损坏返回 1
+
+# ---------- 年报「名副其实性」内容校验（2026-09-20 新增，防张冠李戴）----------
+# 背景（真实事故）: browser_download_file --index 用的是【跨页累积快照】里的元素索引，
+#   翻页后该索引指向【当前页】的任意元素 —— 于是「下 2017 年报」实际下到了同期公告、
+#   评估报告、甚至另一家公司的招股书；且旧校验只查 %PDF- 头 + 体积，32 份错件全部放行入库。
+# 判据: 目标文件名含 YYYY年年度报告 → 前 20 页必须出现该年份的「年度报告/年度報告/年報」字样。
+#   通过返回 0；不通过返回 1 并打印实际首页文字（便于定位下成了什么）。
+annual_content_ok() {  # $1=pdf路径 $2=年份
+  local p="$1" yr="$2" py=""
+  # 探针遍历：必须真的能 import pymupdf，否则换下一个
+  # ⚠️ 教训(2026-09-20): 旧版按路径存在就选，结果选中了无 pymupdf 的解释器 →
+  #    函数走"缺工具则放行"分支 → 所有错件都被判合格，防线形同虚设。
+  local cands c
+  cands=("${LIXINGER_PY:-}" "$VENV/bin/python3" "$VENV/bin/python" \
+         "/Users/niusl321/.workbuddy/binaries/python/envs/default/bin/python3" python3)
+  for c in "${cands[@]}"; do
+    [ -z "$c" ] && continue
+    if { [ -x "$c" ] || command -v "$c" >/dev/null 2>&1; } && "$c" -c 'import pymupdf' >/dev/null 2>&1; then
+      py="$c"; break
+    fi
+  done
+  if [ -z "$py" ]; then
+    echo "    ⚠️ 找不到带 pymupdf 的 python → 无法校验内容，按【拒收】处理(宁缺毋滥，避免脏数据入库)"
+    echo "       解决: 设 LIXINGER_PY=\"/path/to/python3\"(需已装 pymupdf)"
+    return 1
+  fi
+  "$py" - "$p" "$yr" <<'PYEOF'
+import sys, re
+import pymupdf
+p, yr = sys.argv[1], sys.argv[2]
+try:
+    d = pymupdf.open(p)
+except Exception as e:
+    print(f"    打开失败: {e}"); sys.exit(1)
+n = len(d)
+raw30 = " ".join(d[i].get_text() for i in range(min(30, n)))
+head3 = re.sub(r'\s+', ' ', " ".join(d[i].get_text() for i in range(min(3, n))))
+d.close()
+flat = re.sub(r'[\s\u3000]', '', raw30)     # 去空白后匹配，抗「2 0 2 4」字间距设计
+# ① 页数门槛（实测: 真年报 133~455 页；张冠李戴的错件 1~9 页）
+if n < 50:
+    print(f"    仅 {n} 页，年报通常 >100 页 → 判为公告类错件")
+    sys.exit(1)
+# ② 体裁黑名单（只看前 3 页；刻意不含「承诺函/决议公告」——年报目录里会出现这些词）
+BLACK = re.compile(r'招股说明书|招股意向书|募集说明书|上市公告书|反馈意见|'
+                   r'独立意见|跟踪信用评级|内部控制评价|法律意见书|评估报告书')
+mb = BLACK.search(head3)
+if mb:
+    print(f"    首页体裁不是年报(命中「{mb.group(0)}」)，实际首页: {head3[:90]}")
+    sys.exit(1)
+# ③ 年份特征（去空格后匹配）: "2017年度报告" / "2017年年度报告" / "2 0 1 7 年 度 報 告" / "2016 年報"
+cn = ''.join({'0':'〇','1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'七','8':'八','9':'九'}[c] for c in yr)
+pat = re.compile(rf'({yr}[^0-9]{{0,4}}(年度报告|年度報告|年報))|({cn}[^0-9]{{0,4}}(年度报告|年度報告|年報))')
+if pat.search(flat):
+    sys.exit(0)
+# ④ 宽松兜底: 前 30 页同时出现年份与年报字样（港股版式差异，如华电国际 2020）
+if yr in flat and re.search(r'年度报告|年度報告|年報', flat):
+    sys.exit(0)
+# ⑤ 英文兜底（港股年报英文封面，如华润电力 2017）
+if re.search(r'Annual\s*Report', raw30, re.I) and yr in flat:
+    sys.exit(0)
+print(f"    {n}页 未见「{yr}年度报告」字样，实际首页: {re.sub(r'\s+', ' ', raw30)[:90]}")
+sys.exit(1)
+PYEOF
+}
+
 archive() {  # $1=源文件名(basename) $2=目标完整路径
   local src="$DOWNLOADS/$1"; local dst="$2"
   if [ ! -f "$src" ]; then return 1; fi
-  # ⚠️ 空壳一律拒收: 直接丢弃临时文件, 绝不覆盖已存在的有效目标
-  if ! valid_pdf "$src"; then
-    echo "  ❌ 空壳/半截文件已丢弃(未污染目标): $(basename "$src") $(fsize "$src")B"
-    rm -f "$src"
-    return 1
+  # ⚠️ 校验口径必须按【文件类型】分流（2026-09-20 修复回归缺陷）：
+  #   PDF  → 走 valid_pdf(文件头 %PDF- + 体积≥100KB)，挡空壳/HTML 错误页
+  #   非PDF(CSV 等) → 只要求非空。CSV 文件头不是 %PDF- 且通常 7~20KB，
+  #                    套 PDF 校验必然被判「空壳」→ rm 丢弃。
+  #   旧版对【所有】文件都调 valid_pdf，实测导致 6 类财报 CSV 整批丢失
+  #   （日志: "空壳/半截文件已丢弃 …csv 19714B"）—— 修此一处即可。
+  local is_pdf=0
+  case "$(printf '%s' "$src" | tr 'A-Z' 'a-z')" in *.pdf) is_pdf=1;; esac
+  if [ "$is_pdf" = "1" ]; then
+    # 空壳一律拒收: 直接丢弃临时文件, 绝不覆盖已存在的有效目标
+    if ! valid_pdf "$src"; then
+      echo "  ❌ 空壳/半截文件已丢弃(未污染目标): $(basename "$src") $(fsize "$src")B"
+      rm -f "$src"
+      return 1
+    fi
+    # 【内容名副其实性】只有目标名形如「YYYY年年度报告.pdf」时才查（招股资料等跳过）
+    # 可用 LX_CONTENT_CHECK=0 关闭（如遇纯英文封面的港股年报误拒时）。
+    if [ "${LX_CONTENT_CHECK:-1}" = "1" ]; then
+      case "$(basename "$dst")" in
+        *[0-9][0-9][0-9][0-9]年年度报告.pdf)
+          local _cy
+          _cy=$(basename "$dst" | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | head -1)
+          if ! annual_content_ok "$src" "$_cy"; then
+            echo "  ❌ ${_cy}年 内容不是年报(疑似张冠李戴), 已拒收入库: $(basename "$src")"
+            rm -f "$src"
+            return 1
+          fi;;
+      esac
+    fi
+  else
+    if [ ! -s "$src" ]; then
+      echo "  ❌ 空文件已丢弃(未污染目标): $(basename "$src")"
+      rm -f "$src"
+      return 1
+    fi
   fi
   # macOS 用 -X 不带扩展属性复制, 避免在 exFAT 等外置盘生成 ._ 伴生垃圾文件
   if [ "$IS_MAC" = "1" ]; then
@@ -142,7 +240,11 @@ archive() {  # $1=源文件名(basename) $2=目标完整路径
   else
     cp "$src" "$dst"
   fi
-  if valid_pdf "$dst"; then rm -f "$src"; return 0; fi
+  if [ "$is_pdf" = "1" ]; then
+    if valid_pdf "$dst"; then rm -f "$src"; return 0; fi
+  else
+    if [ -s "$dst" ]; then rm -f "$src"; return 0; fi
+  fi
   return 1
 }
 
@@ -264,13 +366,13 @@ for i in "${!TICKERS[@]}"; do
   #   真正要重导时显式加 --force。
   if [ "$FORCE" -eq 0 ]; then
     CSV_EXIST=""
-    for _f in "$COMPANY_DIR"/*.csv; do
+    for _f in "$CSV_DIR"/*.csv; do
       [ -f "$_f" ] || continue
       case "$(basename "$_f")" in
         "${NAME}_${L}"*) CSV_EXIST="$(basename "$_f")"; break;;
       esac
     done
-    if [ -n "$CSV_EXIST" ] && [ -s "$COMPANY_DIR/$CSV_EXIST" ]; then
+    if [ -n "$CSV_EXIST" ] && [ -s "$CSV_DIR/$CSV_EXIST" ]; then
       echo "  ⏭️  已存在(${CSV_EXIST}), 跳过(要重导加 --force)"
       SKIP_COUNT=$((SKIP_COUNT+1))
       continue
@@ -344,7 +446,13 @@ for i in "${!TICKERS[@]}"; do
       "${NAME}"*) FINAL="$NEW";;
       *)          FINAL="${NAME}_${NEW}";;
     esac
-    if archive "$NEW" "$COMPANY_DIR/$FINAL"; then
+    # 剥掉理杏仁导出名自带的 _YYYYMMDD_HHMMSS 时间戳后缀
+    # ⚠️ 2026-09-20 修复（回归缺陷）: 旧版原样保留 → 产出
+    #   `上海电力_资产负债表_合并报表_20260920_114724.csv`，与既有 15 家
+    #   （`国电电力_资产负债表_合并报表.csv`，无日期）命名不一致，
+    #   且违反 skill 自身规范「CSV 文件名必须稳定、不含日期」（防跨天堆积）。
+    FINAL=$(printf '%s' "$FINAL" | sed -E 's/_[0-9]{8}_[0-9]{6}(\.csv)$/\1/')
+    if archive "$NEW" "$CSV_DIR/$FINAL"; then
       echo "  ✅ $FINAL"
       OK_COUNT=$((OK_COUNT+1))
     else
@@ -360,7 +468,7 @@ done
 # ============================================================
 echo "───── [7/7] 员工数据 (DOM提取) ─────"
 # 幂等: 已存在且非空 → 跳过(不打开页面)。要重导加 --force。
-if [ "$FORCE" -eq 0 ] && [ -s "$COMPANY_DIR/${NAME}_员工数据_全体员工.csv" ]; then
+if [ "$FORCE" -eq 0 ] && [ -s "$CSV_DIR/${NAME}_员工数据_全体员工.csv" ]; then
   echo "  ⏭️  已存在(${NAME}_员工数据_全体员工.csv), 跳过(要重导加 --force)"
   SKIP_COUNT=$((SKIP_COUNT+1))
 else
@@ -373,7 +481,7 @@ else
 > /tmp/.lx_emp_raw.txt 2>&1
 
 rm -f /tmp/.lx_emp_fail
-python3 - "$NAME" "$COMPANY_DIR" <<'PY'
+python3 - "$NAME" "$CSV_DIR" <<'PY'
 import json, csv, sys, os, datetime
 name, outdir = sys.argv[1], sys.argv[2]
 try:
@@ -495,7 +603,7 @@ while [ "$PAGE_NO" -le "$MAX_PAGES" ]; do
   collect_page
   # 已覆盖到起始年份 → 收工(不必翻满)
   OLDY=$( { cat /tmp/.lx_annual.txt; } \
-          | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | sort -n | head -1 )
+          | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -n | head -1 )
   if [ -n "$OLDY" ] && [ "$OLDY" -le "$START_YEAR" ] 2>/dev/null; then
     echo "  ✅ 已覆盖到 ${OLDY}年(需 ${START_YEAR}年起)，停止翻页"
     break
@@ -526,13 +634,13 @@ echo "  📄 共采集 ${PAGE_NO} 页"
 #     ② 反而只抓到 H 股繁体版(实测 2022 抓成 12.2MB 的 H 股版, A股全文仅 6.7MB)。
 #   正确做法: 优先取「全文」版, 无「全文」版时才回退到无后缀版。
 # 公司名部分仍用 [^/>]* 通配(兼容简称/全称混用, 如 中国核电 vs 中国核能电力股份有限公司)
-FULL_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}年年度报告全文/>points to a pdf"
-PLAIN_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}年年度报告/>points to a pdf"
+FULL_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}[[:space:]]*年?年度报告全文/>points to a pdf"
+PLAIN_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}[[:space:]]*年?年度报告/>points to a pdf"
 grep -oE "$FULL_RE"  /tmp/.lx_annual.txt | sort -u > /tmp/.lx_pdf_full.txt
 grep -oE "$PLAIN_RE" /tmp/.lx_annual.txt | sort -u > /tmp/.lx_pdf_plain.txt
 # 候选年份 = 两轮命中合并去重(天然去掉多屏重复, 不再需要 DONE_YEARS 守卫)
 YEARS_ALL=$( { cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt; } \
-             | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | sort -u )
+             | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -u )
 echo "  发现 $(cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt | wc -l | tr -d ' ') 个年报链接, 覆盖年份: $(echo $YEARS_ALL | tr '\n' ' ')"
 
 START_YEAR=$(( $(date +%Y) - YEARS ))
@@ -543,7 +651,7 @@ START_YEAR=$(( $(date +%Y) - YEARS ))
 #   这类静默漏抓最危险: 日志看着正常, 数据却缺 9 年。
 # 判据: 拿【已在库的年份】跟【本次发现的年份】比 —— 库里有而这次没发现的, 就是漏抓。
 #   （首次下载时库为空, 无法用此判据; 此时若发现年份明显少于 --years 也会提示。）
-LIBYEARS=$(ls -1 "$PDF_DIR" 2>/dev/null | grep -oE '[0-9]{4}年年度报告' | grep -oE '[0-9]{4}' | sort -u)
+LIBYEARS=$(ls -1 "$PDF_DIR" 2>/dev/null | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -u)
 MISSING_YEARS=""
 if [ -n "$LIBYEARS" ]; then
   for _y in $LIBYEARS; do
@@ -585,14 +693,14 @@ for YEAR in $YEARS_ALL; do
   # 华能国际 2020 同时有「H股2020年年度报告」与「2020年年度报告」两个条目,
   # 旧逻辑 sort 后 head -1 抓到排前的 H 股版(实测 2020/2021/2022 三年均为繁体版)
   VER=""
-  LINE=$(grep "${YEAR}年年度报告全文" /tmp/.lx_pdf_full.txt | head -1)
+  LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告全文" /tmp/.lx_pdf_full.txt | head -1)
   [ -n "$LINE" ] && VER="A股全文"
   if [ -z "$LINE" ]; then
-    LINE=$(grep "${YEAR}年年度报告" /tmp/.lx_pdf_plain.txt | grep -vE "H[ ]?股" | head -1)
+    LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告" /tmp/.lx_pdf_plain.txt | grep -vE "H[ ]?股" | head -1)
     [ -n "$LINE" ] && VER="A股"
   fi
   if [ -z "$LINE" ]; then
-    LINE=$(grep "${YEAR}年年度报告" /tmp/.lx_pdf_plain.txt | head -1)
+    LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告" /tmp/.lx_pdf_plain.txt | head -1)
     [ -n "$LINE" ] && VER="H股繁体"
   fi
   IDX=$(echo "$LINE" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
@@ -687,5 +795,5 @@ echo " 成功 $OK_COUNT 个文件"
 [ -n "$SUSPECT_LIST" ] && echo " ⚠️疑似截断(尾部无 %%EOF/startxref, 请复核):$SUSPECT_LIST"
 echo " 目录: $COMPANY_DIR"
 echo "   PDF: $(ls -1 "$PDF_DIR" 2>/dev/null | wc -l | tr -d ' ') 个"
-echo "   CSV: $(ls -1 "$COMPANY_DIR"/*.csv 2>/dev/null | wc -l | tr -d ' ') 个"
+echo "   CSV: $(ls -1 "$CSV_DIR"/*.csv 2>/dev/null | wc -l | tr -d ' ') 个"
 echo "=========================================="
