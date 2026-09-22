@@ -203,7 +203,7 @@ collect_hits() {
   grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" /tmp/.lx_ipo.txt | sort -u > "$HITS"
 }
 
-"$CLI" browser_start_session --sessionId "$SID" --title "$NAME招股" --color green \
+"$CLI" browser_start_session --sessionId "$SID" --title "${NAME}招股" --color green \
   --initialUrl "$IPO_URL" >/dev/null 2>&1
 trap cleanup EXIT INT TERM
 echo "✅ 会话已开启"
@@ -455,6 +455,6 @@ if [ "$LEFT" -gt 0 ]; then
   echo " ⚠️ 仍有 ${LEFT} 个「未确认*.crdownload」留在下载目录(治理未生效), 请检查"
 fi
 if [ -d "$ORPHAN_DIR" ]; then
-  echo " ℹ️  隔离暂存区: $(ls -1 "$ORPHAN_DIR" 2>/dev/null | grep -c . ) 个文件 → $ORPHAN_DIR（可直接整目录清理）"
+  echo " ℹ️  隔离暂存区: $(ls -1 "$ORPHAN_DIR" 2>/dev/null | grep -c . ) 个文件 → ${ORPHAN_DIR}（可直接整目录清理）"
 fi
 echo "=========================================="

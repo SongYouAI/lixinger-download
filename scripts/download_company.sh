@@ -342,7 +342,7 @@ relocate_orphans
 # 任何异常退出都关会话, 防浏览器 tab 泄漏
 cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
 
-"$CLI" browser_start_session --sessionId "$SID" --title "$NAME财报" --color green \
+"$CLI" browser_start_session --sessionId "$SID" --title "${NAME}财报" --color green \
   --initialUrl "${PREFIX}/bs?${QUERY}" >/dev/null 2>&1
 "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
 trap cleanup EXIT INT TERM
@@ -400,7 +400,7 @@ for i in "${!TICKERS[@]}"; do
 
   # 该报表理杏仁是否未收录(部分公司无经营数据等) → 明确跳过, 避免误报成"找不到排序选项"
   if page_no_data; then
-    echo "  ⏭️  理杏仁未收录【$L】, 跳过(数据源缺失, 非脚本故障)"
+    echo "  ⏭️  理杏仁未收录【${L}】, 跳过(数据源缺失, 非脚本故障)"
     NO_DATA_LIST="$NO_DATA_LIST $L"; continue
   fi
 
@@ -533,7 +533,7 @@ ANN_URL="${PREFIX}/announcement?announcement-type=all"
 #   后面所有代码继续用 $SID → 无需改任何调用点；trap 也会正确关掉新会话。
 "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1
 SID="${SID}-ann"
-"$CLI" browser_start_session --sessionId "$SID" --title "$NAME年报公告" --color cyan \
+"$CLI" browser_start_session --sessionId "$SID" --title "${NAME}年报公告" --color cyan \
   --initialUrl "$ANN_URL" >/dev/null 2>&1
 
 # ---------- 就绪判定（2026-09-20 新增，修「发现 0 个年报链接」）----------

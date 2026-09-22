@@ -432,6 +432,28 @@ done
 **为什么不用 `%%EOF` 判完整性**：见上一节 —— 真实数据其实 0 例外，但**硬门槛的风险是误拒→反复重下**，
 所以只当加分项（`lib_pdf.sh` 的 `pdf_tail_ok()`）。
 
+### 🧹 事后清理 ~/Downloads 孤儿（2026-09-22 新增 `cleanup_downloads.sh`）
+
+> 主流程的 `lib_orphans.sh` 会把 `~/Downloads` 里的 `未确认*.crdownload` **mv 到缓存暂存目录**，
+> 但**在 WorkBuddy 沙箱里对 `~/Downloads` 的 mv/rm 会被拦截**（个人目录高风险操作），
+> 导致孤儿残留在下载目录、只能事后手动清。
+
+已封装一键清理脚本（安全护栏：**只认 `未确认*/Unconfirmed*` 两种模式、默认只列出不删**）：
+
+```bash
+bash scripts/cleanup_downloads.sh                 # 仅列出孤儿，不删（默认）
+bash scripts/cleanup_downloads.sh --trash        # 移入回收站 ~/.Trash（推荐，可随时从 Finder 还原）
+bash scripts/cleanup_downloads.sh --rm --yes     # 永久删除（不可恢复，需 --yes 二次确认）
+```
+
+⚠️ **沙箱限制**：`--trash` / `--rm` 要写 `~/Downloads` 或 `~/.Trash`，在 WorkBuddy 沙箱内会被拦截
+（脚本会打印友好提示）。遇到拦截时，在 **Terminal.app** 里直接运行同样的命令即可：
+`bash ~/.workbuddy/skills/lixinger-download/scripts/cleanup_downloads.sh --trash`
+
+> 设计要点（已实测验证）：脚本回收站路径用 `${HOME:-/Users/$(id -un)}/.Trash` 兜底 ——
+> 规避 macOS 老 bash 3.2 + `set -u` 在 `if` 块内展开顶层变量时的 unbound 怪癖（见上方「shell 陷阱」表）。
+> 兼容 bash 3.2：不用 `mapfile`/`declare -A`，孤儿收集走 `find -print0 | while read -d ''`。
+
 ### 🔴 处理 PDF 尾部的三个实测坑（2026-09-20，都会造成"好文件被误判"）
 
 | 坑 | 现象 | 正确写法 |
@@ -713,6 +735,7 @@ bash scripts/download_ipo.sh --name 三峡能源 --market sh --code 600905 \
 | 中文目录 glob | zsh 下 `ls "$d/年报PDF"/*.pdf` 偶发 `no matches found` | 用 Python `os.listdir` |
 | `x=$(grep -c ... \|\| echo 0)` | **`grep -c` 无匹配时输出 `0` 且退出码=1** → `\|\| echo 0` 再追加一行 → 变量变成 `"0\n0"`，后续 `[ -gt ]` 报 `integer expression expected` 并**静默走错分支**（实测踩到） | `x=$(grep -c ...); x=${x:-0}` |
 | `stat -f '%z %N'` | **BSD/macOS 的 `-f` 是「文件系统模式」**，实测输出 `Inodes: Total: ...` 而非文件名（79 个文件输出 405 行垃圾） | 用 `stat -f%z "$f"`（无空格）逐个取，或 `stat -c%s`（Linux） |
+| `$VAR中文`（变量名紧跟多字节字符，未加花括号） | macOS 自带 **bash 3.2.57** 在 `set -u` 下解析 `$NAME财报` / `$NAME年报公告` 这类「变量紧跟中文」会**误判变量边界**，报 `NAME: unbound variable` 并瞬间退出（即便变量已赋值）。实测首跑 `download_company.sh` 即因此卡在 `browser_start_session --title "$NAME财报"` | 一律写成 **`${NAME}财报`** 显式界定边界。`download_company.sh`/`download_ipo.sh`/`setup_env.sh` 已全量修复；**新写脚本凡「变量+中文」拼接一律加 `{}`** |
 
 ### 外置盘 `._` 垃圾
 
@@ -744,3 +767,4 @@ WorkBuddy 后台 Bash 任务**跨会话会 `not found`**（隔夜后丢失）。
 | `scripts/fill_via_cninfo.sh` | **巨潮 cninfo 补 A 股老年报 / 重下错件**（curl 直下免浏览器、候选遍历、双重校验、幂等）。用法见 `--help`；orgId 可省略（自动查）；重下错件自动生效 |
 | `scripts/audit_annual_pdfs.py` | 🆕 **全库年报「名副其实性」审计**：扫 `*/年报PDF/*.pdf` 逐份判断"是不是它声称那年的年报"，揪出张冠李戴。`python3 audit_annual_pdfs.py "<数据集根>" [--json out.json]`，有不合格则退出码 1。**每轮批量后必跑**（见「验收」节） |
 | `scripts/companies.example.json` | 批量公司清单模板 |
+| `scripts/cleanup_downloads.sh` | 🆕 **事后清理 ~/Downloads 孤儿临时文件**（替代手动清 `未确认*.crdownload`）：`--trash` 移回收站 / `--rm --yes` 永久删，默认 dry-run 只列出。沙箱拦截时需在 Terminal.app 跑 |

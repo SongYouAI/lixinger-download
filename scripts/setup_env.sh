@@ -86,7 +86,7 @@ if [ -x "$CLI" ]; then
     say_ok "守护进程运行中"
     CLIENTS=$(echo "$ST" | grep -oE "Connected clients: [0-9]+" | grep -oE "[0-9]+")
     if [ "${CLIENTS:-0}" -ge 1 ]; then
-      say_ok "浏览器已连接（clients=$CLIENTS）"
+      say_ok "浏览器已连接（clients=${CLIENTS}）"
     else
       say_warn "浏览器未连接（clients=0）→ 关闭浏览器重开，或重新执行: $CLI serve --daemon"
     fi
