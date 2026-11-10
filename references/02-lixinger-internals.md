@@ -1,6 +1,7 @@
 # 理杏仁内部机制（写脚本/排错时读本文）
 
 > 全部内容来自真机实测（2026-09，macOS + QQ 浏览器 + 长江电力）。
+> 命令示例里的 `$LX_TMP` 是 `scripts/lib_platform.sh` 导出的跨平台临时目录（macOS: `$TMPDIR`；Windows: `C:/...`）。
 
 ---
 
@@ -64,9 +65,9 @@ SID=lixinger-dl    # 会话 ID
 "$CLI" browser_wait --sessionId $SID --seconds 2 > /dev/null
 
 # 2) 【关键】弹窗 index 每次都变，必须重新快照动态获取
-"$CLI" browser_snapshot --sessionId $SID > /tmp/pop.txt
-I1=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<input 壹' /tmp/pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
-I2=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<a 时间横排 - 降序' /tmp/pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
+"$CLI" browser_snapshot --sessionId $SID > $LX_TMP/pop.txt
+I1=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<input 壹' $LX_TMP/pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
+I2=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<a 时间横排 - 降序' $LX_TMP/pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
 
 # 3) 先选单位「壹」，再点排序「时间横排 - 降序」→ 触发下载
 "$CLI" browser_click_element --sessionId $SID --index "$I1"
@@ -103,12 +104,12 @@ I2=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<a 时间横排 - 降序' /tmp/pop.txt | gre
 # 1) 提取表格（第 2 个 table 是主表：19 行 × 10 年）
 "$CLI" browser_eval_content_js --sessionId $SID \
   --script "JSON.stringify(Array.from(document.querySelectorAll('table')[1].querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('td,th')).map(td=>td.innerText.trim())))" \
-  > /tmp/emp_table_raw.txt
+  > $LX_TMP/emp_table_raw.txt
 
 # 2) 本地转 CSV（Python 处理，取"原值"列、跳过"同比"列）
 python3 - <<'PY'
 import json, csv
-raw = open('/tmp/emp_table_raw.txt').read()
+raw = open('$LX_TMP/emp_table_raw.txt').read()
 obj = json.loads(raw[raw.find('{'):raw.rfind('}')+1])
 data = json.loads(obj['text'])
 years = data[0][1:]
@@ -145,11 +146,14 @@ PY
 ### 下载命令
 
 ```bash
-"$CLI" browser_download_file --sessionId $SID --index "186_956k_b0pi"
+"$CLI" browser_click_element --sessionId $SID --index "186_956k_b0pi"
 "$CLI" browser_wait --sessionId $SID --seconds 6 > /dev/null
 ```
 
-> ⚠️ CLI 会返回 `Failed! This is not a download button!` —— **这是误报**，实际下载已触发，去下载目录确认即可。
+> ⚠️ 2026-11-10：`browser_download_file` / `browser_download_url` 在 CLI **1.6.3 里已被整条删除**，
+> 再调用会静默失败（错误被重定向吞掉，日志只剩「未检测到下载」，**退出码仍 0**）。
+> 现行做法就是对 PDF `<a>` 直接 `browser_click_element` —— 实测能触发真实下载，
+> 且浏览器顺手过掉了 `static.sse.com.cn` 的 `acw_sc__v2` 反爬（curl 直下只能拿到 3872B 挑战页）。
 
 ### 必须重命名
 
@@ -220,7 +224,7 @@ SID=lixinger-dl
 "$CLI" browser_find_and_act  --sessionId $SID --by text --value "导出CSV" --action click
 "$CLI" browser_click_element --sessionId $SID --index "<index>"  # 点元素
 "$CLI" browser_eval_content_js --sessionId $SID --script "<js>"  # 执行 JS
-"$CLI" browser_download_file --sessionId $SID --index "<index>"  # 触发下载
+"$CLI" browser_click_element --sessionId $SID --index "<index>"  # 点元素（PDF 链接即点即下）
 "$CLI" browser_end_session   --sessionId $SID                    # 关会话
 ```
 

@@ -14,12 +14,13 @@
 #
 # 产出:
 #   {dest}/{公司名}/   （目录结构见 SKILL.md 输出目录规范）
-#   日志: /tmp/lx_batch_<时间戳>.log
+#   日志: $LX_TMP/lx_batch_<时间戳>.log
 # ============================================================
 set -uo pipefail
 
 LIST=""; DEST=""; YEARS=10; ONLY_YEARS=""; FORCE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib_platform.sh"
 SINGLE="$SCRIPT_DIR/download_company.sh"
 
 while [[ $# -gt 0 ]]; do
@@ -44,9 +45,10 @@ if [ -z "$LIST" ] || [ -z "$DEST" ]; then
   exit 1
 fi
 if [ ! -f "$LIST" ]; then echo "❌ 清单文件不存在: $LIST"; exit 1; fi
-if [ ! -x "$SINGLE" ]; then echo "❌ 未找到主脚本: $SINGLE"; exit 1; fi
+# 用 bash "$SINGLE" 调用, 不需要可执行位; 判 -f 即可（-x 会因 644 权限误退出）
+if [ ! -f "$SINGLE" ]; then echo "❌ 未找到主脚本: $SINGLE"; exit 1; fi
 
-LOG="/tmp/lx_batch_$(date +%m%d_%H%M%S).log"
+LOG="$LX_TMP/lx_batch_$(date +%m%d_%H%M%S).log"
 : > "$LOG"
 echo "=========================================="
 echo " 理杏仁批量下载"
@@ -78,5 +80,6 @@ done < "$LIST"
 
 echo "=========================================="
 echo " 批量结束，共 $N 家。日志: $LOG"
-echo " ⚠️ 退出码 0 ≠ 成功，请用 Python 盘真实落盘（见 references/04 第三节）"
+echo " 单家退出码 0 = 无失败项（2026-11-10 起有意义；此前 PDF 全断也是 0）"
+echo " 但仍建议用 Python 盘真实落盘（见 references/04 第三节），退出码只反映脚本判定的失败项"
 echo "=========================================="

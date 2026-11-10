@@ -35,10 +35,12 @@ set -uo pipefail
 NAME=""; MARKET=""; CODE=""; DEST=""; INCLUDE=""; ALLOW_ALL=0
 SID="lixinger-ipo-$(date +%s)"
 
-VENV="${LIXINGER_VENV:-$HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl}"
-CLI="$VENV/bin/qqbrowser-skill"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib_platform.sh"
+VENV="$LX_VENV"
+CLI="$LX_CLI"
 BASE="https://www.lixinger.com/analytics/company/detail"
-DOWNLOADS="${LIXINGER_DOWNLOADS:-$HOME/Downloads}"
+DOWNLOADS="$LX_DOWNLOADS"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -77,8 +79,6 @@ if [ ! -x "$CLI" ]; then
   exit 1
 fi
 
-if [ "$(uname -s)" = "Darwin" ]; then IS_MAC=1; else IS_MAC=0; fi
-
 # 下载落地垃圾治理库（未确认*.crdownload 的隔离与同内容清理）
 # shellcheck source=lib_orphans.sh
 source "$(cd "$(dirname "$0")" && pwd)/lib_orphans.sh"
@@ -108,23 +108,24 @@ archive() {
   return 1
 }
 
-# ---------- 自动登录（同 download_company.sh）----------
+# ---------- 自动登录（统一交给 lixinger_login.sh，同 download_company.sh）----------
+# 判据统一: 页面文本含账号 = 已登录。「登录/注册」链接在已登录态也可能残留, 不能用来判。
+# 必须在开会话前调用: 登录脚本会自建并关闭自己的会话。
 login_if_needed() {
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_ipo_login.txt 2>&1
-  if ! grep -q "登录/注册" /tmp/.lx_ipo_login.txt; then echo "  ✅ 理杏仁已登录"; return 0; fi
-  echo "  🔑 未登录 → 点击右上角「登录/注册」(浏览器已存账号密码)"
-  "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录/注册" --action click >/dev/null 2>&1
-  "$CLI" browser_wait --sessionId "$SID" --seconds 4 >/dev/null 2>&1
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_ipo_login2.txt 2>&1
-  if grep -qE "\[[0-9]+_[a-z0-9_]+\]<button 登录" /tmp/.lx_ipo_login2.txt; then
-    "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录" --action click >/dev/null 2>&1
-    "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
+  local LOGIN_SH="$SCRIPT_DIR/lixinger_login.sh"
+  local CREDS="$LX_CREDS"
+  local OUT="$LX_TMP/.lx_ipo_login_run.txt"
+  if [ ! -f "$LOGIN_SH" ] || [ ! -f "$CREDS" ]; then
+    echo "  ⚠️ 自动登录不可用(缺 $LOGIN_SH 或 $CREDS) → 依赖浏览器残留登录态"
+    return 1
   fi
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_ipo_login3.txt 2>&1
-  if grep -q "登录/注册" /tmp/.lx_ipo_login3.txt; then
-    echo "  ⚠️ 自动登录未生效 → 请手动登录一次后重跑"; return 1
+  if bash "$LOGIN_SH" > "$OUT" 2>&1; then
+    sed 's/^/  /' "$OUT" | head -12
+    return 0
   fi
-  echo "  ✅ 自动登录成功"; return 0
+  echo "  ❌ 自动登录失败 → 继续尝试浏览器残留登录态"
+  sed 's/^/     /' "$OUT" | head -12
+  return 1
 }
 
 OK_COUNT=0; SKIP_COUNT=0; FILTERED_COUNT=0; FAIL_LIST=""; DUP_CONTENT=""; SUSPECT_LIST=""
@@ -150,7 +151,7 @@ echo "── 开跑前治理下载目录 ──"
 pre_clean_orphans
 
 IPO_URL="${PREFIX}/announcement?announcement-type=ipo"
-HITS="/tmp/.lx_ipo_hits.txt"
+HITS="${LX_TMP}/.lx_ipo_hits.txt"
 
 # ---------- 就绪判定（关键修复 2026-09-19）----------
 # 教训: 公告列表是【异步渲染】的。旧版固定等 5s+3s 就采集, 页面往往还没出条目,
@@ -189,25 +190,27 @@ collect_hits() {
   # 提前收敛: 收齐 EXPECT 条即停(招股列表通常仅 2~22 条, 不必每次滚满 19 屏)
   "$CLI" browser_scroll_to_bottom --sessionId "$SID" >/dev/null 2>&1   # 先触发懒加载
   "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-  : > /tmp/.lx_ipo.txt
+  : > "${LX_TMP}/.lx_ipo.txt"
   local pos got
   for pos in 0 400 800 1200 1600 2000 2400 2800 3200 3600 4000 4500 5000 6000 7000 8000 9000 10500 12000; do
     "$CLI" browser_eval_content_js --sessionId "$SID" \
       --script "window.scrollTo(0,${pos});'ok'" >/dev/null 2>&1
     "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
-    "$CLI" browser_snapshot --sessionId "$SID" >> /tmp/.lx_ipo.txt 2>&1
-    got=$(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" /tmp/.lx_ipo.txt | sort -u | wc -l | tr -d ' ')
+    "$CLI" browser_snapshot --sessionId "$SID" >> "${LX_TMP}/.lx_ipo.txt" 2>&1
+    got=$(grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" "${LX_TMP}/.lx_ipo.txt" | sort -u | wc -l | tr -d ' ')
     if [ -n "$EXPECT" ] && [ "$EXPECT" -gt 0 ] 2>/dev/null && [ "$got" -ge "$EXPECT" ]; then break; fi
   done
   # 提取所有指向 pdf 的条目(不限标题, IPO 分类下全是发行文件)
-  grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" /tmp/.lx_ipo.txt | sort -u > "$HITS"
+  grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" "${LX_TMP}/.lx_ipo.txt" | sort -u > "$HITS"
 }
+
+# ---------- 自动登录（先于开会话，保证 Cookie 就位）----------
+login_if_needed || true
 
 "$CLI" browser_start_session --sessionId "$SID" --title "${NAME}招股" --color green \
   --initialUrl "$IPO_URL" >/dev/null 2>&1
 trap cleanup EXIT INT TERM
 echo "✅ 会话已开启"
-login_if_needed || true
 
 echo "── 采集发行文件清单 ──"
 wait_ready || true
@@ -234,8 +237,8 @@ echo "── 发现 $COUNT 个发行文件 ──"
 #   ⚠️ 早先版本用「从下载临时名提取公告日期」做后缀, 在上交所(600905_20240605_4QY7.pdf)
 #      可行, 但在深交所得不到可用名(实测落到「未确认 986022.crdownload」) → 日期后缀失效,
 #      3 条重名仍互相覆盖。序号方案与交易所命名格式无关, 且次序确定 → 幂等成立。
-DUP_TITLES="/tmp/.lx_ipo_dup_titles.txt"
-DUPSEQ="/tmp/.lx_ipo_dupseq.txt"
+DUP_TITLES="${LX_TMP}/.lx_ipo_dup_titles.txt"
+DUPSEQ="${LX_TMP}/.lx_ipo_dupseq.txt"
 sed -E 's/^\[[0-9]+_[a-z0-9_]+\]<a //; s#/>points to a pdf$##' "$HITS" | sort | uniq -d > "$DUP_TITLES"
 : > "$DUPSEQ"
 DUPN=$(wc -l < "$DUP_TITLES" | tr -d ' ')
@@ -298,14 +301,16 @@ check_dup_content() {  # $1=刚归档的文件全路径; 返回 0=内容与组�
 try_download() {
   local idx="$1" i cr cand prev_cr=""
   DL_NEW=""
-  snap_dl > /tmp/.lx_ipo_before.txt
-  "$CLI" browser_download_file --sessionId "$SID" --index "$idx" >/dev/null 2>&1
+  snap_dl > "${LX_TMP}/.lx_ipo_before.txt"
+  # 2026-11-10: qqbrowser-skill 1.6.3 删除了 browser_download_file 子命令（静默失败，退出码仍 0）。
+  #   改为点击 <a> 触发浏览器真实下载；下载检测/校验逻辑不变。详见 download_company.sh 同处注释。
+  "$CLI" browser_click_element --sessionId "$SID" --index "$idx" >/dev/null 2>&1
   for i in $(seq 1 25); do          # 最多 50s(.crdownload 定型 + 大文件都要时间)
     "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-    snap_dl > /tmp/.lx_ipo_after.txt
-    DL_NEW=$(new_pdf /tmp/.lx_ipo_before.txt /tmp/.lx_ipo_after.txt)
+    snap_dl > "${LX_TMP}/.lx_ipo_after.txt"
+    DL_NEW=$(new_pdf "${LX_TMP}/.lx_ipo_before.txt" "${LX_TMP}/.lx_ipo_after.txt")
     [ -n "$DL_NEW" ] && return 0
-    cr=$(new_cr /tmp/.lx_ipo_before.txt /tmp/.lx_ipo_after.txt)
+    cr=$(new_cr "${LX_TMP}/.lx_ipo_before.txt" "${LX_TMP}/.lx_ipo_after.txt")
     if [ -n "$cr" ]; then
       cand=$(printf '%s' "$cr" | sed -E 's/^[0-9]+ //')
       # 接受该 .crdownload 的条件（满足其一即可）：
@@ -408,7 +413,7 @@ while IFS= read -r line; do
       echo "  ❌ 归档失败: ${SAFE}"; FAIL_LIST="$FAIL_LIST ${SAFE}"
     fi
   else
-    if [ -n "$(new_cr /tmp/.lx_ipo_before.txt /tmp/.lx_ipo_after.txt)" ]; then
+    if [ -n "$(new_cr "${LX_TMP}/.lx_ipo_before.txt" "${LX_TMP}/.lx_ipo_after.txt")" ]; then
       echo "  ⚠️  下载未完成(.crdownload 仍在增长/非 PDF): ${SAFE}"; FAIL_LIST="$FAIL_LIST ${SAFE} [crdownload未定型]"
     else
       echo "  ⚠️  未检测到下载: ${SAFE}"; FAIL_LIST="$FAIL_LIST ${SAFE} [未落盘]"
@@ -420,7 +425,7 @@ fi
 cleanup
 
 # 清理 ._ 垃圾
-python3 - "$COMPANY_DIR" <<'PY' 2>/dev/null
+python3 - "$(lx_native_path "$COMPANY_DIR")" <<'PY' 2>/dev/null
 import os, sys
 n = 0
 for root, dirs, files in os.walk(sys.argv[1]):

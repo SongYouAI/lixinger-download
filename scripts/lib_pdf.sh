@@ -19,6 +19,11 @@
 #   （PDF 规范允许增量更新等形态）→ 所以 ③ 只做"加分项"，绝不做"硬门槛"。
 # ============================================================
 
+# 允许单独 source 本库（主脚本已在顶部 source 过 lib_platform.sh）
+if [ -z "${LX_OS:-}" ]; then
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_platform.sh"
+fi
+
 # ---------- 基础原语（全 skill 只此一份实现，其余脚本/库一律薄封装调用）----------
 _pdf_fsize() { if [ "${IS_MAC:-0}" = "1" ]; then stat -f%z "$1" 2>/dev/null; else stat -c%s "$1" 2>/dev/null; fi; }
 _pdf_md5()   { if [ "${IS_MAC:-0}" = "1" ]; then md5 -q "$1" 2>/dev/null; else md5sum "$1" 2>/dev/null | awk '{print $1}'; fi; }

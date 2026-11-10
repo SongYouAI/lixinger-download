@@ -49,6 +49,8 @@
 | 现象 | 根因 | 解决 |
 |------|------|------|
 | `Failed! This is not a download button!` | **CLI 误报**，下载实际已触发 | 忽略报错，去下载目录确认文件 |
+| 🔴 **年报 PDF 全部「未检测到下载」、重试 3 次全败、退出码却是 0** | `qqbrowser-skill` **1.6.3 删除了 `browser_download_file` / `browser_download_url`** 两个子命令（`--help` 命令清单已无任何 download 项）；旧调用错误被 `>/dev/null 2>&1` 吞掉。1.6.0 被强制拦截升级，**回滚不可行** | 改用 `browser_click_element --index` 点 PDF `<a>`，实测即触发真实下载，且浏览器顺便过了 `static.sse.com.cn` 的 `acw_sc__v2` 反爬。2026-11-10 已在 `download_company.sh` / `download_ipo.sh` 改完 |
+| 想读 `document.cookie` 拿反爬 cookie 给 curl 用 | **死路**：`browser_eval_content_js` 禁止访问 cookie，返回 `Rejected: script contains forbidden API (document.cookie access)` | 别绕了，直接让浏览器点链接下载 |
 | PDF 下载了但名字是 `600900_20260430_WC8R.pdf` | 理杏仁原始名不可读 | 下载后立即重命名为 `{公司}_{YYYY}年年度报告.pdf` |
 | 员工数据点了导出但没文件 | 该页 UI 导出在自动化下不触发（已知限制） | 用 DOM 提取表格 + 本地生成 CSV（见 internals 第三节） |
 | `mv: EXDEV: cross-device link not permitted` | 跨设备移动（内置盘 → 外置盘） | 用 `cp` + `rm` 代替 `mv` |
@@ -83,7 +85,7 @@
 │   ├─ 等待时间不够？ → 增加到 8-10 秒
 │   ├─ 是否误报？     → 检查下载目录（CLI 常报 "not a download button" 但已下载）
 │   ├─ 空壳文件？     → 校验文件头/体积（脚本已内置拒收，打不开就是空壳）
-│   └─ 登录态过期？   → 自动点右上角「登录/注册」(浏览器已存密码)；失败才手动登录
+│   └─ 登录态过期？   → 跑 bash scripts/lixinger_login.sh；失败再查凭证/账号到期
 └─ 数据不对（年份数不对 / 版本不对）
     ├─ URL 没带 start-date/end-date → 补上日期参数
     ├─ 漏了某年 → 扩大滚动范围重扫（见第四节"漏年份"行）
@@ -94,27 +96,30 @@
 
 ## 六、登录态失效的处理（**能自动恢复，别换数据源**）
 
-理杏仁 token 会过期。判定信号：快照里出现「**登录/注册**」（而已登录时应是账号/头像）。
+理杏仁 token 会过期。**判据：页面文本含账号（手机号）= 已登录**。「登录/注册」链接在已登录态也可能残留，**不能**用它判。
 
-> ✅ **正确处理（脚本已自动化）**：点击右上角「**登录/注册**」——
-> **账号密码已保存在浏览器里，点一下就自动登录**（老板 2026-09-19 亲授）。
-> `download_company.sh` / `download_ipo.sh` 的 `login_if_needed()` 会自动做这件事。
+> ✅ **正确处理（脚本已自动化）**：`download_company.sh` / `download_ipo.sh` 在开会话前
+> 自动调用 `scripts/lixinger_login.sh`；未登录时它读 `~/.config/lixinger-download/creds.json`，
+> 用 `HTMLInputElement.prototype` 的 value setter + 派发 `input` 事件填 React 受控表单，再点提交。
+> （直接 `el.value=` 赋值 React 收不到，这是踩过的坑。）
 
 > ⛔ **切勿因未登录就去换数据源**！2026-09-19 实测：东方财富 / 巨潮 cninfo / 上交所 / 新浪
 > **全部拿不到原始年报 PDF**（东财只给"一张图读懂"信息图、cninfo 与 SSE API 均 HTTP 500、
 > 新浪 `Service not valid`），白白浪费十几轮排查。
 
 ```bash
-# 自动登录（脚本内置逻辑，可手动复现）：
-"$CLI" browser_find_and_act --sessionId $SID --by text --value "登录/注册" --action click
-"$CLI" browser_wait --sessionId $SID --seconds 4
-
-# 验证登录态：首页应重定向到 /profile/center/...（已登录）
-"$CLI" browser_go_to_url --sessionId $SID --url "https://www.lixinger.com"
-"$CLI" browser_eval_content_js --sessionId $SID --script "JSON.stringify({url:location.href})"
+bash scripts/lixinger_login.sh --check   # 只查状态：当前状态: IN / OUT / UNK
+bash scripts/lixinger_login.sh            # 自动登录（已登录则秒退）
 ```
 
-> 仅当**自动登录失败**（复检快照仍含「登录/注册」）时，才手动在浏览器登录一次后重跑。
+> ⚠️ **`当前状态: UNK` = 页面没渲染完整，不是「未登录」**。2026-11-10 回归实测：SPA 骨架态
+> `body.innerText` 只有 300 字（正常 11843 字），旧就绪判据「文本 >200 字」提前放行 →
+> 状态 UNK → 弹窗 `OPENED=none` / 表单 `FILL=noinput` → 误报登录失败。
+> 现脚本等到 `state()` 明确返回 `IN`/`OUT` 才就绪；UNK 会重载重试一次，仍 UNK 则明确报错退出，不再猜。
+> 看到 `页面就绪(…, 文本 300 字, 状态 IN)` 才是有效判定。
+
+> 仅当**自动登录失败**时，才检查：凭证文件是否存在、账号是否到期、站点是否加了验证码、
+> 登录弹窗选择器（`input[placeholder="账号或手机号"]` / `input[placeholder="密码"]`）是否变了。
 
 ---
 

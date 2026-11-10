@@ -1,6 +1,11 @@
 ---
 name: lixinger-download
+display_name: 理杏仁财报批量下载
+display_name_en: Lixinger Financial Report Downloader
+version: 2.2.0
 description: 理杏仁(lixinger.com)财报批量自动下载。当用户要下载理杏仁的公司财报/Excel/CSV/年报PDF、招股说明书/招股意向书/IPO发行文件、批量抓取财务数据时使用。驱动已登录的 QQ 浏览器自动导出资产负债表、利润表、现金流量表、财务指标、营收构成、经营数据、员工数据(7类CSV,均10年) + 10年PDF年报 + IPO分类下的招股/发行文件，按「公司 / 年报PDF / 招股资料 / 理杏仁财报」目录结构归档。支持 A股(sh/sz)与港股(hk)通道，缺失年份可用港交所 hkexnews 直链补。无人值守，全程免费。
+description_zh: 理杏仁财报批量自动下载：驱动已登录的浏览器自动导出 7 类财报 CSV（10 年）、10 份年报 PDF 与 IPO 招股/发行文件，按公司规范目录归档，支持 A 股与港股，全程免费、无人值守。账号密码由使用者自备，交给 Agent 自动登录。
+description_en: Batch-download Lixinger (lixinger.com) financial data: drive a logged-in browser to export 7 categories of 10-year CSV reports, 10 annual-report PDFs and IPO prospectus/issuance files into a tidy per-company folder structure. Supports A-shares and HK-listed companies, fully unattended and free. Account credentials are supplied by the user and handed to the Agent for automatic sign-in.
 agent_created: true
 ---
 
@@ -8,7 +13,12 @@ agent_created: true
 
 用浏览器自动化接管**已登录理杏仁**的浏览器，按公司批量导出 7 类财报 CSV（10 年）+ 10 份年报 PDF + IPO 分类下的招股/发行文件，自动归档到规范目录。
 
-> 本 skill 的所有流程与坑位均来自**真机实测**（macOS + QQ 浏览器；长江电力单家跑通 + 17 家电力公司批量验证）。
+> 本 skill 的所有流程与坑位均来自**真机实测**，且**只在 macOS + QQ 浏览器**上验证过
+> （长江电力单家跑通 + 17 家电力公司批量验证 + 国电电力 / 贵州茅台回归）。
+>
+> 🔴 **Windows 从未测试过**：代码里虽有平台适配层（`lib_platform.sh`），但**没有在 Windows 真机上跑过一次**，
+> 不保证能运行、也不清楚会遇到什么坑。想用 Windows 请照 `references/01-environment-setup.md` 第七节自行部署，
+> 出问题按 `references/03-troubleshooting.md` 排查，风险自负。
 
 ## 触发场景
 
@@ -41,20 +51,54 @@ agent_created: true
 > **全部碰壁**（东财把年报路由到「一张图读懂」信息图拿不到原件、cninfo 与 SSE API 均 HTTP 500、
 > 新浪 `Service not valid`），白白浪费十几轮排查。
 
-✅ **正确做法**：点击页面右上角「**登录/注册**」——
-**账号密码已保存在浏览器里，点一下就自动登录**（QQ 浏览器会自动填充并提交）。
+✅ **正确做法（2026-11-10 起全自动，不需要人肉登录）**：
 
-脚本已内置 `login_if_needed()`，会话开启后自动执行：
-1. 快照里出现「登录/注册」→ 判定未登录
-2. `browser_find_and_act --by text --value "登录/注册" --action click`
-3. 若弹出登录框且有「登录」按钮（表单已自动填充）→ 再点一次提交
-4. 复检仍显示「登录/注册」→ 打印「请在浏览器里手动登录一次后重跑」
-
-手动兜底命令：
 ```bash
-CLI=~/.workbuddy/binaries/python/envs/qqbrowser-ctl/bin/qqbrowser-skill
-"$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录/注册" --action click
+bash scripts/lixinger_login.sh          # 已登录秒退；未登录自动填表提交
+bash scripts/lixinger_login.sh --check  # 只查状态
 ```
+
+凭证放 `~/.config/lixinger-download/creds.json`（`chmod 600`，已 `.gitignore`）：
+
+```json
+{ "account": "手机号", "password": "密码" }
+```
+
+> 🔴 仓库是 **GitHub public**，凭证文件**永远不许提交**。换号只改这一个文件。
+> 登录页实测**没有验证码**，账号+密码可直接登。
+> 实现坑（React 受控组件必须用 value setter 派发 input 事件、SPA 就绪判定等）见 `references/05-browser-matrix.md` 第三节。
+
+⛔ 仍然**不要换数据源** —— 实测绕去东财 / cninfo / 上交所 API / 新浪全部碰壁，白烧十几轮排查。
+
+---
+
+## 🌐 三种浏览器都支持（Chrome / Edge / QQ）—— 但通道不同，别混着说
+
+| 浏览器 | 通道 | 谁驱动 | 能执行 JS | 能批量/定时 |
+|---|---|---|---|---|
+| **QQ 浏览器** | `qqbrowser-skill` CLI | `scripts/*.sh` | ✅ | ✅ |
+| **Chrome / Edge** | WorkBuddy 扩展 | **只能 agent 用 `mcp__browser__*` 驱动**（脚本调不到 MCP） | ❌ | ❌（只能逐家手动跑） |
+
+**Chrome / Edge 必须先做一次性设置**，否则下载永远不落盘（点三次都没反应那种）：
+
+```bash
+bash scripts/setup_browser_downloads.sh --check   # 看现状
+bash scripts/setup_browser_downloads.sh           # 改（自动退出浏览器，可 --revert 还原）
+```
+改的是 `download.prompt_for_download=false`（否则下载卡在原生「存储为」对话框，扩展点不掉）
+和 `plugins.always_open_pdf_externally=true`（否则 PDF 只预览不下载）。
+
+**能力边界（别承诺做不到的）**
+
+| 内容 | QQ | Chrome / Edge |
+|---|---|---|
+| 年报 PDF | ✅ | ✅ |
+| 6 类财报 CSV | ✅ | ✅（无需选「壹」，导出单位就是元） |
+| 员工数据（17 指标×10 年） | ✅ | ❌ 未实现（ext 无 JS 执行能力） |
+
+> 三条通道的完整操作步骤、选择器、踩坑清单 → **`references/05-browser-matrix.md`**（写 Chrome/Edge 流程前必读）。
+> 顺带一个发现：Chrome/Edge 的 `bs` 页 DOM 里**直接带 10 年年报 PDF 直链**，
+> 不用进公告页、不用翻页，路径比 QQ 那条简单得多。
 
 ---
 
@@ -92,6 +136,8 @@ bash scripts/download_company.sh --name 贵州茅台 --market sh --code 600519 -
 # 只补 PDF（跳过 CSV）：加 --skip-csv
 # 只处理指定年份（精准补漏/换版）：加 --only-years 2020,2021,2022
 # 强制覆盖已有效文件（版本升级，如 H 股→A 股）：加 --force
+# 只下三主表（资产负债表/利润表/现金流量表），跳过财务指标/营收构成/经营数据/员工数据：加 --main-only
+# CSV 落到自定义目录（必须绝对路径）：加 --csv-dir /abs/path/to/理杏仁财报_元_年报
 ```
 
 清单文件示例（也可参考 `scripts/companies.example.json`）：
@@ -110,13 +156,30 @@ bash scripts/download_company.sh --name 贵州茅台 --market sh --code 600519 -
 | 约束 | 说明 |
 |------|------|
 | **必须免费** | 所有工具均为开源/免费，禁止使用任何付费 API 或付费 LLM |
-| **登录态** | 首次需**手动登录一次**（cookie 持久化）；之后过期时脚本会**自动点「登录/注册」**恢复（账号密码已存浏览器），无需人管 |
+| **账号凭证** | **账号密码由使用者自己提供，本 skill 不附带任何账号**。最省事：把账号密码**直接交给 Agent**，由它写入 `~/.config/lixinger-download/creds.json`（600、仓库外、已 gitignore，⛔ 绝不入库）。获取渠道：理杏仁官方注册/购买，或二手平台（俗称「海鲜市场」/闲鱼）购买共享号（有效期与合规风险自负）。详见 `references/01-environment-setup.md` 步骤 5 |
+| **登录态** | 一次性写入 `~/.config/lixinger-download/creds.json`（600，已 gitignore）；`download_company.sh` / `download_ipo.sh` 开会话前自动调用 `lixinger_login.sh`，未登录时自动填表提交，无需人工登录 |
+| **平台状态** | **仅 macOS 真机实测通过；Windows / Linux 从未在真机上测试过**。代码含平台适配层（`lib_platform.sh`），但**不构成可用性保证**。Windows 上 PowerShell / CMD 不能执行 `.sh`，只能用 Git Bash / MSYS2 / WSL；部署流程见 `references/01-environment-setup.md` 第七节 |
 | **频率克制** | 每次导出间隔 ≥5 秒，避免触发风控/验证码 |
 | **串行执行** | 多公司批量必须串行，浏览器会话不可并行 |
 | **目录规范** | 见下方，禁止平铺 |
 | **文件命名** | 必须带公司名前缀（理杏仁原始名如 `600900_20260430_WC8R.pdf` 完全不可读） |
 | 🔴 **招股资料禁全量** | `招股资料/` 的取舍由老板人工筛选（已定稿 31 份）。**不得**把 IPO 分类整批下载；`download_ipo.sh` 不带 `--include` 直接拒绝执行。无明确指令就不要动这个目录 |
 | 🔴 **零重复下载** | 一切已存在且有效的产物**一律跳过**：年报 PDF（`valid_pdf`）、**7 类 CSV（按报表名匹配，含员工数据）**、招股文件（`valid_pdf`，重名组按 `(k)` 逐条判）。要强制刷新才加 `--force` |
+
+### 🔴 前置设置（必做，漏一项整个流程卡住）
+
+三件事，按序做（逐项说明见 `references/01-environment-setup.md` 第零节）：
+
+1. **WorkBuddy 设置 → 智能体 → 浏览器操控（Beta）**：打开「**让 WorkBuddy 控制浏览器**」，并给目标浏览器装 WorkBuddy 扩展（Chrome / Edge / QQ 各一个，需显示绿点「已安装」；无法访问扩展商店就点「**手动安装**」用开发者模式加载）。不开 → CLI `status` 显示 `Connected clients: 0`，脚本点不动页面。
+2. **浏览器下载设置**：Edge `edge://settings/downloads`、Chrome `chrome://settings/downloads`（QQ 浏览器：设置 → 下载），关掉这两项：
+   - 「**在下载之前询问每个文件的保存位置**」——不关每次下载都弹系统「存储为」对话框，**扩展点不掉 → 文件永远不落盘**（实测连点三次全无反应）；
+   - 「**下载开始时显示下载菜单**」——不关每次下载弹下载浮层抢焦点、遮挡页面，**直接干扰自动化翻页与下载进度判定**。
+   - 建议再关「在浏览器中打开 Office 文件」，否则 CSV 会被浏览器直接打开而不落到下载目录。
+3. **脚本兜底**：`bash scripts/setup_browser_downloads.sh` 自动改 Chrome/Edge 的 `download.prompt_for_download=false` 与 `plugins.always_open_pdf_externally=true`；**「下载菜单」「Office 文件」两项必须在设置页手动关**。改完要**完全退出并重启浏览器**才生效。
+
+![WorkBuddy 设置 → 智能体 → 浏览器操控与扩展安装](https://newphotobed.oss-cn-shanghai.aliyuncs.com/img/clipboard-2026-11-10T23-32-20-809Z-c6734de9.png)
+
+![浏览器下载设置：关闭「询问保存位置」与「下载开始时显示下载菜单」](https://newphotobed.oss-cn-shanghai.aliyuncs.com/img/clipboard-2026-11-10T23-32-20-810Z-d8ddfcf8.png)
 
 ### 输出目录规范
 
@@ -177,14 +240,24 @@ https://www.lixinger.com/analytics/company/detail/{market}/{code}/{code}/{ticker
 
 **导出三连**：点「导出CSV」→ 选「壹」→ 点「时间横排 - 降序」→ 自动下载
 
+> 🔴 **单位「壹」必须用 JS 点隐藏 input，不能用 `browser_click_element` 点快照 index**（2026-10-16 实测踩坑）。
+> 导出弹窗的单位是 Bootstrap 隐藏 radio（`input.btn-check` + 可见 label），`browser_click_element` 点快照里的「壹」
+> **不会触发 React 的 onChange** → 下出来的 CSV **仍是「亿」单位**，而文件第 3 行「货币:元」会骗过肉眼校验。
+> 正确做法（已写进 `download_company.sh`）：用 `browser_eval_content_js` 执行 JS，
+> 定位 `label[for=input.id]` 文本为「壹」的隐藏 input 并派发 `input.click()`。
+> **下完后务必跑 `scripts/verify_csv_units.py` 做量级校验**，防单位静默错误。
+
 > ⚠️ **例外**：经营数据(`operating-data`) 弹窗**没有「壹」单位选项**（该表单位固定）。若卡在"找不到单位"直接跳过选单位、点排序即可下载。
 
 ---
 
 ## 验收：批量后必须「盘真实落盘」
 
-⚠️ **`download_company.sh` 退出码 0 ≠ 成功**。脚本内部个别年份下载失败**不会**改变退出码，只在日志打 ⚠️/❌。
-实测 12 家全部退出码 0，但真盘发现 **4 家整段 0 份 + 3 家零星缺年**。
+⚠️ **`download_company.sh` 退出码 0 ≠ 一定齐全**。
+2026-11-10 起：有失败项（❌失败项非空）**退出码 1**，`batch_download.sh` 会记录每家的退出码。
+但「理杏仁未收录 / 已存在跳过 / H股繁体替代」都**不算失败**，所以退出码 0 仍可能缺内容 —— 仍需盘落盘。
+历史教训：2026-11-10 之前 PDF 阶段 10 年全断、日志只有「⚠️未检测到下载」、**退出码却是 0**；
+实测 12 家全部退出码 0 但真盘发现 **4 家整段 0 份 + 3 家零星缺年**。
 
 批量结束后**必须**用 Python 盘目录（模板见 `04-batch-playbook.md` 第三节），检查每家：
 CSV 数、年报 PDF 数与年份连续性、是否有 `._` 垃圾、根目录是否有散落 PDF 或 CSV（都应进对应子层，不得裸落在根目录）。
@@ -207,6 +280,30 @@ python3 scripts/audit_annual_pdfs.py "<数据集根目录>"        # 例: /Volum
 > 发现不合格 → 用 `fill_via_cninfo.sh` 重下（它会自动识别"文件头合格但内容不对"并强制重下），
 > 完事再跑一次审计直到 **0 不合格**。
 
+### 🆕 CSV 单位量级核验（批量后必做，防「亿」静默入库）
+
+> **背景**：2026-10-16 实测确认，理杏仁导出弹窗的单位「壹」若用 `browser_click_element` 点会失效，
+> 下出来的 CSV **实为「亿」单位**（如资产总计 5,613 而非 559,208,340,047），但文件头写「货币:元」。
+> 这种错误**退出码 0、肉眼难辨**，只有看数值量级才会发现。
+>
+> **必做**：批量（或单家）下载 CSV 后，立即跑单位校验：
+> ```bash
+> python3 scripts/verify_csv_units.py "<数据集根目录>/某公司/理杏仁财报/"
+> # 或单文件: python3 scripts/verify_csv_units.py a.csv b.csv
+> ```
+> 它通过「资产总计 / 营业收入」等大数锚点的**数值量级**判断单位（元应 ≥1e9，亿则 <1e6），
+> 同时检测是否混入非 `12-31` 的季报/中报列。有任一问题退出码 1 并打印清单。
+> ⚠️ 此脚本只做**校验与告警**，不自动改文件——发现「亿」单位请重下那几张表。
+>
+> **判据细节**（2026-11-10 修正，此前会误报/漏报）：
+> - 锚点行名做**归一化精确匹配**（去 BOM、去「一、」等前导序号、去尾部 `(元)`），
+>   **不是子串匹配** —— 否则「人均营业总收入」「每股经营活动产生的现金流量净额」等派生指标会被误当大数锚点。
+> - 量级取该行**最大绝对值**，不假设「最新年在最右」（不同表排序不一致）。
+> - `="600436"` 这类文本包装（股票代码/公司名列）不参与数值解析。
+> - 纯年份表头（员工数据写作 `2025`）按年报口径 `12-31` 处理，不误报「含非年报」。
+> - **读取失败 / 空文件 = 硬问题（退出码 1）**；此前会打印「读取失败」却标 `✓元` 并退出 0，掩盖漏下与损坏。
+> - 营收构成 / 经营数据 / 员工数据 / 财务指标 无大数锚点 → 标 `ⓘ跳过`，属正常（单位核验靠三主表即可）。
+
 ---
 
 ## 已知限制
@@ -220,11 +317,63 @@ python3 scripts/audit_annual_pdfs.py "<数据集根目录>"        # 例: /Volum
 | ① | `archive()` 对**所有文件**都调 `valid_pdf`（要求文件头 `%PDF-` + 体积 ≥100KB） | **6 类财报 CSV（7~20KB）全被判「空壳」→ `rm` 丢弃**。日志只写「空壳/半截文件已丢弃 …csv 19714B」，不报错 → 极易误判成"下载成功"。实测整家公司 6 张 CSV **一张不剩** | 按扩展名分流：`.pdf` 才走 `valid_pdf`，非 PDF 只要求**非空** |
 | ② | CSV 归档名**原样保留理杏仁导出名**（含 `_YYYYMMDD_HHMMSS`） | 产出 `上海电力_资产负债表_合并报表_20260920_114724.csv`，与既有 15 家（`国电电力_资产负债表_合并报表.csv`，无日期）**命名不一致**，且违反本 skill「CSV 名必须稳定、不含日期」规范 → 跨天重跑会堆同名文件 | 归档前 `sed` 剥掉 `_[0-9]{8}_[0-9]{6}.csv` 后缀 |
 | ③ | 年报正则写死 `[0-9]{4}年年度报告` | **标题缺「年」字的年份整年漏抓**。实测 桂冠电力 2020 年报标题为「…2020**年度报告**」、川投能源 2021 为「…2021 **年**年度报告」（年份后带空格）→ 两年均未发现链接，日志却显示「已覆盖到 2016 年」，**看不出缺口** | 放宽为 `[0-9]{4}[[:space:]]*年?年度报告`（同时覆盖 `YYYY年度报告` / `YYYY 年年度报告` / `YYYY年年度报告`），全脚本 6 处统一 |
-| ④ | **`browser_download_file --index` 用的是「跨页累积快照」里的元素索引** | **张冠李戴（本轮最严重）**：翻到最后一页后，旧索引指向**当前页的任意元素** → 「下 2017 年报」实际下到了同期**公告 / 评估报告 / 招股书 / 承诺函**。实测 5 家新增中 **32 份错件**；且旧校验只看 `%PDF-` 头 + 体积（公告也是合法 PDF）→ **全部放行入库**，日志全绿 | ①`archive()` 增加**内容名副其实性校验**（`annual_content_ok`，见「脚本内置的四道防线」）；②补漏改走 cninfo **候选遍历**（逐个下载+校验，首个通过者归档）；③新增全库审计脚本 `scripts/audit_annual_pdfs.py`。⚠️ 根因（陈旧索引）**未重构**，见下方「已知未决问题」 |
+| ④ | **`browser_download_file --index` 用的是「跨页累积快照」里的元素索引** | **张冠李戴（本轮最严重）**：翻到最后一页后，旧索引指向**当前页的任意元素** → 「下 2017 年报」实际下到了同期**公告 / 评估报告 / 招股书 / 承诺函**。实测 5 家新增中 **32 份错件**；且旧校验只看 `%PDF-` 头 + 体积（公告也是合法 PDF）→ **全部放行入库**，日志全绿 | ①`archive()` 增加**内容名副其实性校验**（`annual_content_ok`，见「脚本内置的四道防线」）；②补漏改走 cninfo **候选遍历**（逐个下载+校验，首个通过者归档）；③新增全库审计脚本 `scripts/audit_annual_pdfs.py`。⚠️ 根因（陈旧索引）已于 **2026-11-10 重构为「边翻页边下」**，见下方同名修复记录 |
 
 > 教训：**"退出码 0 + 日志没有红色"≠ 数据齐全**。①③ 都不会让脚本失败，
 > 只能靠「盘真实落盘 + 逐年比对 2016-2025」发现（见 `04-batch-playbook.md` 验收节）。
 > 建议每轮批量后都用 Python 逐家列出「CSV 数 / PDF 年份 / 缺口年份」。
+
+### 🔴 2026-11-10 修复：CSV 单位校验器三处判据缺陷（`verify_csv_units.py`）
+
+| # | 缺陷 | 真实后果 | 修法 |
+|---|---|---|---|
+| ① | 读取失败 / 空文件只进 `issues`，不进 `hard` 判定 | 文件缺失或损坏时打印「读取失败」却标 `✓元`、**退出码 0** → 校验器对漏下与坏件静默放过，比不校验更危险 | 「读取失败 / 空文件」计入硬问题，结论列 `✗读失败`，退出码 1 |
+| ② | 锚点用**子串**匹配（`if a in name`） | 员工数据表首行「**人均**营业总收入」命中锚点「营业总收入」→ 314.46 被判「疑似亿单位」，**好文件被报错**（假阳性） | 行名归一化（去 BOM／前导序号「一、」／尾部 `(元)`）后**精确等值**匹配 |
+| ③ | 量级只取 `vals[-1]`，注释断言「最新年在最右」 | 不同表排序不一致 → 取到最老年份或标识列；且 `="600436"`（股票代码）被当数值参与比较，告警里的量级数字误导 | 取该行**最大绝对值**；含 `"` 的文本包装单元格直接跳过 |
+
+> 实测回归：片仔癀 7 张 CSV（3 主表 `✓元` + 4 表 `ⓘ跳过`，0 问题，退出码 0）；
+> 人造「亿单位」「含中报」两个坏样本均被抓出（退出码 1），正常样本通过。
+
+### 🔴 2026-11-10 修复：PDF 全断的真根因是 CLI 删了下载命令
+
+**现象**：年报 PDF 10 年**全部**「未检测到下载」，每年重试 3 次全败，日志无报错，**退出码 0**。
+
+**根因**：`qqbrowser-skill` 从 1.6.0 升到 **1.6.3** 后，`browser_download_file` 与 `browser_download_url`
+两个子命令**被整条删除**（`--help` 的合法命令清单里已无任何 download 项；包内只剩安装器逻辑）。
+脚本调的正是已被删除的命令 → 调用返回错误被 `>/dev/null 2>&1` 吞掉 → 只剩「未检测到下载」。
+且 1.6.0 被**强制拦截升级**（`blocked until you upgrade`），**回滚不可行**，只能改脚本适配。
+
+**解法（实测通过）**：对公告页里的 PDF `<a>` 直接 `browser_click_element` 即可触发浏览器真实下载。
+
+| 项 | 结论 |
+|---|---|
+| 是否需要 cookie / token | **不需要**。href 是 `static.sse.com.cn` 交易所公开直链 |
+| curl 能否直下 | ❌ 拿到 **3872B 的 `acw_sc__v2` JS 挑战页**（不是 PDF），换 UA/Accept 也无效 |
+| 浏览器能否过挑战 | ✅ 能（所以必须让浏览器去点，curl 绕不过） |
+| 点击后页面是否跳走 | 实测**不跳**（URL 仍停在 announcement 页，后续快照 index 继续有效） |
+| 下载物是否名副其实 | ✅ 落盘 1.7MB / 323 页，首頁确认「2025 年年度报告」 |
+
+**顺带修掉的静默缺陷**：`download_company.sh` 收尾原来不设退出码，失败项再多也 `exit 0`。
+现在 **`FAIL_LIST` 非空即 `exit 1`**，`batch_download.sh` 逐家记录退出码。
+
+> 同批改动：`download_ipo.sh` 的 `try_download()` 也有同一处失效调用（招股资料 PDF 同样全断），已一并改为点击。
+> 新增 `ann_onsite()`：失败路径下若页面被导航离公告页，自动 `browser_go_back` 回退（成功路径不查，省一次调用）。
+> ⚠️ 查 cookie 绕反爬这条路是死路：`browser_eval_content_js` **禁止访问 `document.cookie`**（返回 `Rejected: script contains forbidden API`）。
+
+**修完下载命令，立刻暴露出第二个更深的问题（已一并根治）**：
+第一次修好后跑 `--years 3` → 2023 成功 5.9MB，2024 下到 6 页公告、2025 下到 5 页公告，双双被内容校验拒收。
+原因不是命令又有问题，而是**「先翻完所有页再统一下载」这个结构本身错了**（即下文「坑 4」）：
+下载开跑时浏览器停在最后一页，只有最后一页的索引对得上。
+→ 已重构为「**边翻页边下**」，`process_pdf_year()` 只认当前页快照里的索引。
+
+实测（国电电力，均含 `audit_annual_pdfs.py` 全库审计）：
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| `--years 3` 首次 | 1 成功 / 2 张冠李戴被拒收 | **3/3 成功**，与 cninfo 同源文件大小一致（6.0M / 1.9M / 1.8M） |
+| `--years 3` 重跑（幂等） | — | **3/3 跳过**，不重复下载 |
+| `--only-years 2024 --force` | — | 只重下 2024，2023/2025 正确过滤 |
+| `--years 10` | — | **10 年一次跑通** |
 
 ### 各报表页差异
 
@@ -263,15 +412,20 @@ python3 scripts/audit_annual_pdfs.py "<数据集根目录>"        # 例: /Volum
 > ⚠️ **页面上的「年度报告」分类按钮点了不生效**（实测年份不变），别拿它当筛选。
 > ⚠️ 早期写死的滚动范围（12000px / 步长 600）已改为**按实际页高自适应**（`document.body.scrollHeight`，步长 700）。
 >
-> **坑 4（✅ 已加防线，根因未重构）：`browser_download_file --index` 的索引跨页失效 → 张冠李戴。**
-> `IDX` 是从**累积快照**（`/tmp/.lx_annual.txt` 由 `collect_page` 多页反复 `>>` 追加）里 grep 出来的
-> 元素索引；而下载循环跑在**所有页采完之后**，此时浏览器已翻到最后一页。
-> → 用旧索引在当前页找元素，命中的是**当前页的任意元素** →
+> **坑 4（✅ 2026-11-10 已根治）：索引跨页失效 → 张冠李戴。**
+> 症状：用旧索引在当前页找元素，命中的是**当前页的任意元素** →
 > 　「下 2017 年报」实际下到了同期**公告 / 评估报告 / 招股书**。
 > 　铁证：桂冠电力 2019 与 2022 两个不同年份下到了**同一份**「12桂冠02 债券回售公告」；
 > 　且错误文件清一色是同一页上的那批公告。
-> → **已加防线**：`archive()` 的 `annual_content_ok()` 内容校验（下错即拒收，不再污染库），
-> 　补漏走 cninfo 候选遍历，批量后跑 `audit_annual_pdfs.py`。
+> **根因**：`IDX` 是从**累积快照**里 grep 出来的（多页反复 `>>` 追加），而下载跑在**所有页采完之后**，
+> 　此时浏览器已翻到最后一页 → 只有最后一页的索引还对得上，其余年份必然点到别的东西。
+> **根治方式**：把「先翻完所有页再统一下载」改成「**边翻页边下**」——
+> 　`process_pdf_year()` 只读**当前页快照**（`$LX_TMP/.lx_pg_now.txt`）里的索引，
+> 　每采完一页就当场把它那几年下掉；累积快照只留给「覆盖度自检」，两者职责分开。
+> 　`$LX_TMP/.lx_done_years.txt` 防同一条目跨页重复下载。
+> 实测：国电电力 `--years 10` 一次跑通 10 年（2016→2025），内容审计 10/10 合格。
+> **仍需保留的防线**：`archive()` 的 `annual_content_ok()`（万一站点结构又变，坏件不会入库）、
+> 　`audit_annual_pdfs.py`（批量后全库复扫）。
 > → **未决**：根因（陈旧索引）本身没重构。**根治方案**（下次碰这块时优先做）：
 > 　把下载**移进翻页循环**——每页采完立即匹配并下载该页命中的年份（用当页新鲜快照 +
 > 　`DONE_YEARS` 去重），而不是等所有页采完再统一按旧索引下载。
@@ -474,7 +628,7 @@ bash scripts/cleanup_downloads.sh --rm --yes     # 永久删除（不可恢复�
 
 **实测证据**：17 家巡检共 **7 处失败**，逐条看全部落在各公司的**第一条**下载上。
 
-**根因**：新会话/热身阶段 `browser_download_file` 首次触发常无效。
+**根因**：新会话/热身阶段首次触发下载常无效（原为 `browser_download_file`；2026-11-10 起改为 `browser_click_element`，此现象是否仍在未复测）。
 
 **对策**（已内置）：`try_download()` 包一层**自动重试 3 次**；
 单次失败判定为「前 16s 连 `.crdownload` 都没冒出」即早退（约 16s/次，3 次约 50s 封顶）。
@@ -577,7 +731,8 @@ https://query.sse.com.cn/security/stock/queryCompanyBulletinNew.do?isPagination=
 3. **下载绕过防盗链**：直链 **curl 必拿到 3872B 空壳**（static.sse.com.cn 防盗链）。
    正确做法是用 qqbrowser-skill 让**浏览器导航到直链**触发下载：
    `browser_go_to_url --sessionId <SID> --url <直链>` → 浏览器按 Content-Disposition 把 PDF 存到 `~/Downloads`。
-   ⚠️ `browser_download_url` **没有 URL 参数**（定义里无 params），不可用；只能 `browser_go_to_url` 导航触发。
+   ⚠️ `browser_download_url` / `browser_download_file` **在 qqbrowser-skill 1.6.3 里已被整条删除**（`--help` 命令清单已无 download 项），
+   **不要再用**，否则静默失败且退出码仍 0。现行做法：对公告页的 PDF `<a>` 直接 `browser_click_element`。
 4. **校验**：落盘后查 `%PDF-` 头 + 大小 >1MB，再 `cp -X`（不带 xattr，避免 exFAT 生成 `._`）归档到 `年报PDF/`。
 
 > 实测：华能国际 2023/2024、三峡能源 2025 三个此前 3872B 空壳，均用此法从 `static.sse.com.cn` 补回真实 PDF（7.0/6.7/2.5 MB）。
@@ -712,7 +867,7 @@ bash scripts/download_ipo.sh --name 三峡能源 --market sh --code 600905 \
 ```
 
 手动要点（脚本内部即此逻辑）：
-- snapshot 抓每行 `[idx]<a 标题/>points to a pdf`，逐个 `browser_download_file`（交易所直链有防盗链，curl 下不动）。
+- snapshot 抓每行 `[idx]<a 标题/>points to a pdf`，逐个 `browser_click_element` 触发下载（交易所直链有防盗链，curl 下不动）。
 - 归档到 `{公司}/招股资料/`，命名 `{公司名}_{标题去掉公司名前缀}.pdf`；已存在且校验通过就跳过。
 - 分段滚动 0~9000px（条目多的公司列表长，单屏快照会漏）。
 - **条目数差异极大（0~30 条/家），别按固定数预期**。2026-09-19 对 17 家逐家实测合计约 **153 条**；
@@ -758,8 +913,15 @@ WorkBuddy 后台 Bash 任务**跨会话会 `not found`**（隔夜后丢失）。
 | `references/02-lixinger-internals.md` | 写脚本或流程出错时——URL 模式、导出机制、各页面差异、完整命令 |
 | `references/03-troubleshooting.md` | 报错/下载失败时——坑位清单与排查决策树 |
 | `references/04-batch-playbook.md` | **多公司批量时必读**——驱动脚本模板、验收盘点、**补漏决策树**、17 家实测结果表 |
+| `references/05-browser-matrix.md` | **Chrome / Edge / QQ 三通道必读**——能力边界、自动登录、一次性下载设置、ext 通道取数步骤与踩坑 |
 | `scripts/setup_env.sh` | 环境自检与一键安装 |
+| `scripts/acceptance_windows.sh` | 可选工具：串跑静态自检 / 环境 / 登录 / 端到端下载 / 两道验收 / 落盘盘点，输出 PASS/FAIL 日志（`--dest "C:/Users/<你>/Desktop/理杏仁验收"`）。**只在 macOS 上验证过脚本逻辑，Windows 上从未运行**，不是可用性依据 |
+| `scripts/selftest.sh` | 无浏览器静态自检：平台识别、`LX_*` 变量、全部 `.sh`/`.py` 语法、shell↔Python 临时目录一致性、UTF-8 中文、盘符判定、残留硬编码、`.gitattributes`。**退出码 0 只说明静态检查通过，不代表能真的下载** |
+| `scripts/lib_platform.sh` | 🆕 **平台抽象层**：导出 `LX_OS`/`LX_CLI`/`LX_TMP`/`LX_HOME`/`LX_CREDS`/`LX_BROWSER_DATA`/`LX_CACHE`，提供 `lx_is_abs_path()` 与 `lx_native_path()`。所有脚本 source 它，不再硬编码 `/tmp` 或 `bin/` |
 | `scripts/download_company.sh` | 单公司完整下载主脚本（`--skip-csv` / `--skip-pdf` / `--only-years` / `--force`）|
+| `scripts/lixinger_login.sh` | 🆕 **理杏仁自动登录（QQ 通道）**——读 `~/.config/lixinger-download/creds.json`，已登录秒退；`--check` 只查状态，`--keep` 保留会话并打印 SID |
+| `scripts/setup_browser_downloads.sh` | 🆕 **Chrome/Edge 下载设置一键开关**——静默下载 + PDF 直下（`--check` / `--revert`），不改就没法自动化下载 |
+| `scripts/verify_csv_units.py` | 🆕 **CSV 单位量级核验**（防「亿」单位静默入库），见「验收」节 |
 | `scripts/download_ipo.sh` | **招股/发行文件（IPO 分类）下载**——**必须带 `--include`（禁全量灌）**，幂等 |
 | `scripts/lib_pdf.sh` | **PDF 完整性校验库**（两脚本共用）：`pdf_fsize` / `pdf_md5` / `pdf_head_ok` / `pdf_size_ok` / `pdf_tail_ok` / `pdf_acceptable`。**体积·md5·有效性的实现全 skill 只有这一份**，两个下载脚本里的 `fsize`/`md5_p`/`valid_pdf` 都是薄封装，避免两处走样 |
 | `scripts/lib_orphans.sh` | **下载落地垃圾治理库**（两个下载脚本共用）：同内容孤儿删除 / 其余隔离到暂存目录 / 暂存去重与过期清理。依赖 `lib_pdf.sh`，两者必须一起 source |

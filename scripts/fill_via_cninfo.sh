@@ -30,6 +30,8 @@
 # ============================================================
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib_platform.sh"
 NAME=""; CODE=""; ORG=""; YEARS=""; DEST=""
 SKIP_EXIST=1
 CONTENT_CHECK=1
@@ -49,7 +51,7 @@ done
 if [ -z "$NAME" ] || [ -z "$CODE" ] || [ -z "$YEARS" ] || [ -z "$DEST" ]; then
   echo "❌ 缺少必填参数。见 --help"; exit 1
 fi
-PY="${LIXINGER_PY:-/Users/niusl321/.workbuddy/binaries/python/envs/default/bin/python3}"
+PY="${LIXINGER_PY:-python3}"
 [ -x "$PY" ] || PY=python3
 MIN_PDF_BYTES="${MIN_PDF_BYTES:-102400}"
 mkdir -p "$DEST"
@@ -62,7 +64,7 @@ mkdir -p "$DEST"
 #   → ③ 前 30 页去空格后匹配「年份+年报」（应对 "2 0 2 4 年 度 報 告" 这类字间距设计）
 #   → ④ 英文兜底（港股年报英文封面，如华润电力）
 content_ok() {  # $1=pdf路径 $2=年份
-  "$PY" - "$1" "$2" <<'PY'
+  "$PY" - "$(lx_native_path "$1")" "$2" <<'PY'
 import sys, re
 try:
     import pymupdf
@@ -196,24 +198,24 @@ PY
     [ -z "$URL" ] && continue
     # 必须带 Referer，否则返回 1.6KB HTML 假文件
     curl -s --noproxy '*' -L -H 'User-Agent: Mozilla/5.0' -H 'Referer: http://www.cninfo.com.cn/' \
-      -o /tmp/.cninfo_dl.pdf "http://static.cninfo.com.cn/${URL#/}"
-    sz=$(stat -f%z /tmp/.cninfo_dl.pdf 2>/dev/null || stat -c%s /tmp/.cninfo_dl.pdf 2>/dev/null || echo 0)
-    hd=$(head -c 5 /tmp/.cninfo_dl.pdf 2>/dev/null)
+      -o "${LX_TMP}/.cninfo_dl.pdf" "http://static.cninfo.com.cn/${URL#/}"
+    sz=$(stat -f%z "${LX_TMP}/.cninfo_dl.pdf" 2>/dev/null || stat -c%s "${LX_TMP}/.cninfo_dl.pdf" 2>/dev/null || echo 0)
+    hd=$(head -c 5 "${LX_TMP}/.cninfo_dl.pdf" 2>/dev/null)
     if [ "$hd" = "%PDF-" ] && [ "$sz" -ge "$MIN_PDF_BYTES" ]; then
       cv="OK"
-      [ "$CONTENT_CHECK" -eq 1 ] && cv="$(content_ok /tmp/.cninfo_dl.pdf "$YR" || true)"
+      [ "$CONTENT_CHECK" -eq 1 ] && cv="$(content_ok "${LX_TMP}/.cninfo_dl.pdf" "$YR" || true)"
       if [ "$cv" = "OK" ]; then
-        if [ "$(uname -s)" = "Darwin" ]; then cp -X /tmp/.cninfo_dl.pdf "$DST" 2>/dev/null || cp /tmp/.cninfo_dl.pdf "$DST"
-        else cp /tmp/.cninfo_dl.pdf "$DST"; fi
+        if [ "$LX_OS" = "mac" ]; then cp -X "${LX_TMP}/.cninfo_dl.pdf" "$DST" 2>/dev/null || cp "${LX_TMP}/.cninfo_dl.pdf" "$DST"
+        else cp "${LX_TMP}/.cninfo_dl.pdf" "$DST"; fi
         echo "  ✅ ${YR}年 ($((sz/1024))KB) [候选命中] $(printf '%.58s' "$TITLE")"
         DONE=1; break
       fi
       echo "     ↩️ 候选不合格 → 换下一候选（$(printf '%.52s' "$cv")）"
     fi
-    rm -f /tmp/.cninfo_dl.pdf
+    rm -f "${LX_TMP}/.cninfo_dl.pdf"
     sleep 1
   done <<< "$CAND"
-  rm -f /tmp/.cninfo_dl.pdf
+  rm -f "${LX_TMP}/.cninfo_dl.pdf"
   if [ "$DONE" -eq 0 ]; then
     echo "  ❌ ${YR}年 全部候选均未通过内容校验"; FAIL=$((FAIL+1))
   else

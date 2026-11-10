@@ -6,9 +6,11 @@
 # ============================================================
 set -uo pipefail
 
-VENV="${LIXINGER_VENV:-$HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl}"
-CLI="$VENV/bin/qqbrowser-skill"
-OS="$(uname -s)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib_platform.sh"
+VENV="$LX_VENV"
+CLI="$LX_CLI"
+OS="$LX_OS"
 PASS=0; FAIL=0
 
 say_ok()   { echo "  ✅ $1"; PASS=$((PASS+1)); }
@@ -43,7 +45,7 @@ else
   echo "       → 执行: python3 -m venv $VENV"
   if [[ "${1:-}" == "--install" ]]; then
     echo "       → 正在自动创建…"
-    mkdir -p "$(dirname "$VENV")" && python3 -m venv "$VENV" && echo "       ✅ 已创建"
+    mkdir -p "$(dirname "$VENV")" && python3 -m venv "$(lx_native_path "$VENV")" && echo "       ✅ 已创建"
   fi
 fi
 
@@ -53,27 +55,29 @@ if [ -x "$CLI" ]; then
   say_ok "CLI 就位: $CLI"
 else
   say_bad "CLI 未安装"
-  echo "       → 执行: $VENV/bin/pip install qqbrowser-skill"
+  echo "       → 执行: $LX_PIP install qqbrowser-skill"
   if [[ "${1:-}" == "--install" ]] && [ -d "$VENV" ]; then
     echo "       → 正在自动安装…"
-    "$VENV/bin/pip" install -q qqbrowser-skill && echo "       ✅ 已安装"
+    "$LX_PIP" install -q qqbrowser-skill && echo "       ✅ 已安装"
   fi
 fi
 
 # ---- 4. 浏览器 ----
 echo "[4/6] 浏览器"
 BROWSER_FOUND=0
-case "$OS" in
-  Darwin)
+case "$LX_OS" in
+  mac)
     if [ -d "/Applications/QQBrowser.app" ]; then say_ok "QQ 浏览器已安装（macOS）"; BROWSER_FOUND=1; fi
     [ -d "/Applications/Google Chrome.app" ] && say_ok "Chrome 已安装（备选通道）"
     ;;
-  Linux)
+  linux)
     command -v qqbrowser >/dev/null 2>&1 && { say_ok "QQ 浏览器已安装（Linux）"; BROWSER_FOUND=1; }
     command -v google-chrome >/dev/null 2>&1 && say_ok "Chrome 已安装（备选通道）"
     ;;
-  MINGW*|MSYS*|CYGWIN*)
-    [ -d "/c/Program Files (x86)/Tencent/QQBrowser" ] && { say_ok "QQ 浏览器已安装（Windows）"; BROWSER_FOUND=1; }
+  windows)
+    for _d in "$(lx_slash "${LOCALAPPDATA:-}")/Tencent/QQBrowser" "/c/Program Files (x86)/Tencent/QQBrowser" "/c/Program Files/Tencent/QQBrowser"; do
+      [ -d "$_d" ] && { say_ok "QQ 浏览器已安装（Windows）: $_d"; BROWSER_FOUND=1; break; }
+    done
     ;;
 esac
 [ "$BROWSER_FOUND" -eq 0 ] && say_bad "未找到 QQ 浏览器 → 下载 https://browser.qq.com/ （Linux 请走 Playwright 备选通道）"
@@ -101,12 +105,12 @@ else
   say_bad "CLI 缺失，跳过守护进程检查"
 fi
 
-# ---- 6. 登录态（可自动恢复）----
+# ---- 6. 登录态（凭证 + 自动登录）----
 echo "[6/6] 理杏仁登录态"
-echo "      ℹ️  登录态过期无需手动处理：download_company.sh 检测到未登录时会"
-echo "         自动点击右上角「登录/注册」(账号密码已存于浏览器) → 一点即登录。"
+echo "      ℹ️  凭证: ~/.config/lixinger-download/creds.json (600, 已 gitignore)"
+echo "         下载脚本开会话前自动调用 scripts/lixinger_login.sh，未登录时自动填表提交。"
 echo "      ⛔ 切勿因未登录就换数据源(东财/巨潮/上交所/新浪均不可取, 实测全部失败)。"
-echo "      仅当自动登录失败时, 才手动在浏览器打开 https://www.lixinger.com 登录一次。"
+echo "      自检: bash scripts/lixinger_login.sh --check  (输出 当前状态: IN 即正常)"
 
 echo "=========================================="
 echo " 结果: ✅ $PASS 项通过, ❌ $FAIL 项缺失"

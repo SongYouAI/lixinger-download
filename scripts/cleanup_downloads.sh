@@ -4,7 +4,7 @@
 #
 # 背景（2026-09-22 实测）：
 #   主流程的 lib_orphans.sh 会把 ~/Downloads 里的「未确认*.crdownload」
-#   孤儿 mv 到 ~/Library/Caches/.../orphans 暂存目录。但在 WorkBuddy 沙箱里，
+#   孤儿 mv 到 $LX_CACHE/.../orphans 暂存目录。但在 WorkBuddy 沙箱里，
 #   对 ~/Downloads 的 mv/rm 会被拦截（属个人目录高风险操作），导致残留堆积，
 #   只能事后手动清。
 #
@@ -25,7 +25,9 @@
 
 set -u
 
-DOWNLOADS="${LIXINGER_DOWNLOADS:-$HOME/Downloads}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib_platform.sh"
+DOWNLOADS="$LX_DOWNLOADS"
 
 # 只认这两种孤儿模式（与 lib_orphans.sh 完全一致，绝不扩大范围）
 PAT_ZH='未确认*.crdownload'
@@ -41,7 +43,7 @@ usage() {
 
 用法:
   cleanup_downloads.sh [--dry-run]   列出孤儿，不删除（默认）
-  cleanup_downloads.sh --trash      移入回收站 ~/.Trash（可还原，推荐）
+  cleanup_downloads.sh --trash      移入回收站 ~/.Trash（仅 macOS，可还原）
   cleanup_downloads.sh --rm --yes   永久删除（不可恢复，需二次确认）
 
 环境变量:
@@ -77,7 +79,7 @@ fi
 
 echo "在 $DOWNLOADS 发现 ${n} 个孤儿临时文件："
 for f in "${ORPHANS[@]}"; do
-  sz=$(stat -f%z "$f" 2>/dev/null || echo '?')
+  if [ "$LX_OS" = "mac" ]; then sz=$(stat -f%z "$f" 2>/dev/null || echo '?'); else sz=$(stat -c%s "$f" 2>/dev/null || echo '?'); fi
   printf '  • %s  (%sB)\n' "$(basename "$f")" "$sz"
 done
 
@@ -90,7 +92,11 @@ fi
 
 # ---- 移入回收站（trash 目录用兜底，避免 HOME 未导出时 set -u 触发 unbound）----
 if [ "$MODE" = "trash" ]; then
-  trash_dir="${HOME:-/Users/$(id -un)}/.Trash"
+  if [ "$LX_OS" != "mac" ]; then
+    echo "❌ --trash 只支持 macOS 回收站（当前平台: ${LX_OS}）。请先用 --dry-run 查看，再手工移入系统回收站或加 --rm --yes。"
+    exit 2
+  fi
+  trash_dir="$HOME/.Trash"
   mkdir -p "$trash_dir" 2>/dev/null
   moved=0; fail=0
   for f in "${ORPHANS[@]}"; do

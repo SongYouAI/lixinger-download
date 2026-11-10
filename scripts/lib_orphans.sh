@@ -21,10 +21,15 @@
 #   ③ 暂存去重：搬运时若暂存区已有同 md5 文件，则本次这份删掉（避免暂存无限膨胀）
 #
 # 可调环境变量：
-#   LIXINGER_ORPHAN_DIR   暂存目录（默认 ~/Library/Caches/lixinger-download/orphans）
+#   LIXINGER_ORPHAN_DIR   暂存目录（默认 $LX_CACHE/lixinger-download/orphans）
 # ============================================================
 
-ORPHAN_DIR="${LIXINGER_ORPHAN_DIR:-$HOME/Library/Caches/lixinger-download/orphans}"
+# 允许单独 source 本库（主脚本已在顶部 source 过 lib_platform.sh）
+if [ -z "${LX_TMP:-}" ]; then
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_platform.sh"
+fi
+
+ORPHAN_DIR="${LIXINGER_ORPHAN_DIR:-$LX_CACHE/lixinger-download/orphans}"
 # 孤儿文件名模式：仅匹配浏览器"未命名程序化下载"，绝不碰用户自己的正常下载
 ORPHAN_GLOB_ZH="未确认*.crdownload"
 ORPHAN_GLOB_EN="Unconfirmed*.crdownload"
@@ -53,7 +58,7 @@ list_orphans() {
 delete_twin_orphans() {
   local ref f sz h cand n=0
   local idx
-  idx=$(mktemp /tmp/.lx_orphidx.XXXXXX) || return 0
+  idx=$(mktemp "${LX_TMP}/.lx_orphidx.XXXXXX") || return 0
   for ref in "$@"; do
     [ -f "$ref" ] || continue
     sz=$(_orph_fsize "$ref"); [ -n "$sz" ] || continue

@@ -1,0 +1,13 @@
+# 凭证与本地状态 —— 绝不提交（仓库是 public）
+creds.json
+.creds
+*.credentials
+.env
+
+# 运行产物
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+._*
+*.crdownload

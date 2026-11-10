@@ -5,12 +5,14 @@
 # 用法:
 #   bash download_company.sh --name 长江电力 --market sh --code 600900 \
 #        --dest "/Volumes/KIOXIA/上市公司研究/电力系统/01-发电运营（15家）" [--years 10] [--skip-pdf] [--skip-csv] \
-#        [--only-years 2020,2021,2022] [--force]
+#        [--only-years 2020,2021,2022] [--force] [--csv-dir /绝对路径] [--main-only]
 #
 # 幂等说明: 默认【只下载缺失或校验失败的年份】, 已存在且有效的 PDF 直接跳过。
 #   补漏场景直接重跑即可, 不会重复下载。
 #   --only-years : 只处理指定年份(逗号分隔); 与 --force 组合可精准换版(如 H 股→A 股)
 #   --force      : 强制覆盖已有效文件(版本升级时用)
+#   --csv-dir    : 覆盖默认 CSV 落盘目录(必须绝对路径)。默认 {dest}/{name}/理杏仁财报
+#   --main-only  : 只下三主表(资产负债表/利润表/现金流量表), 跳过财务指标/营收构成/经营数据/员工数据
 #
 # A股优先规则(老板 2026-09-19 明确): A+H 两地上市公司【优先下载 A 股年报】,
 #   仅当某年 A 股未收录时才回退 H 股繁体版。脚本内置该优先级, 并会标注每年用的版本。
@@ -27,13 +29,17 @@ set -uo pipefail
 NAME=""; MARKET=""; CODE=""; DEST=""; YEARS=10
 SKIP_PDF=0; SKIP_CSV=0; FORCE=0
 ONLY_YEARS=""   # 逗号分隔, 如 2020,2021,2022; 空=处理全部年份
+CSV_DIR_ARG=""  # 绝对路径: 覆盖默认 $DEST/$NAME/理杏仁财报, 用于自定义输出子目录(如 理杏仁财报_元_年报)
+MAIN_ONLY=0     # 1=只下 资产负债表/利润表/现金流量表 三主表, 跳过财务指标/营收构成/经营数据/员工数据
 SID="lixinger-dl-$(date +%s)"
 
-# ---------- 路径 ----------
-VENV="${LIXINGER_VENV:-$HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl}"
-CLI="$VENV/bin/qqbrowser-skill"
+# ---------- 路径（平台抽象，见 lib_platform.sh）----------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib_platform.sh"
+VENV="$LX_VENV"
+CLI="$LX_CLI"
 BASE="https://www.lixinger.com/analytics/company/detail"
-DOWNLOADS="${LIXINGER_DOWNLOADS:-$HOME/Downloads}"
+DOWNLOADS="$LX_DOWNLOADS"
 
 # ---------- 参数解析 ----------
 while [[ $# -gt 0 ]]; do
@@ -47,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --skip-csv) SKIP_CSV=1; shift;;
     --force) FORCE=1; shift;;
     --only-years) ONLY_YEARS="$2"; shift 2;;
+    --csv-dir) CSV_DIR_ARG="$2"; shift 2;;
+    --main-only) MAIN_ONLY=1; shift;;
     -h|--help) awk 'NR>2 && /^# =/{exit} NR>2{sub(/^# ?/,""); print}' "$0"; exit 0;;
     *) echo "未知参数: $1"; exit 1;;
   esac
@@ -68,11 +76,9 @@ if [ ! -x "$CLI" ]; then
 fi
 
 # ---------- 日期范围（跨平台）----------
-if [ "$(uname -s)" = "Darwin" ]; then
-  IS_MAC=1
+if [ "$LX_OS" = "mac" ]; then
   START_DATE=$(date -v-${YEARS}y +%Y-%m-%d)
 else
-  IS_MAC=0
   START_DATE=$(date -d "${YEARS} years ago" +%Y-%m-%d)
 fi
 END_DATE=$(date +%Y-%m-%d)
@@ -86,9 +92,17 @@ source "$(cd "$(dirname "$0")" && pwd)/lib_orphans.sh"
 # shellcheck source=lib_pdf.sh
 source "$(cd "$(dirname "$0")" && pwd)/lib_pdf.sh"
 
+# ---------- 路径 ----------
 COMPANY_DIR="$DEST/$NAME"
 PDF_DIR="$COMPANY_DIR/年报PDF"
-CSV_DIR="$COMPANY_DIR/理杏仁财报"
+if [ -n "$CSV_DIR_ARG" ]; then
+  if ! lx_is_abs_path "$CSV_DIR_ARG"; then
+    echo "❌ --csv-dir 必须传绝对路径(当前: $CSV_DIR_ARG)，否则会落到不可预期的相对目录"; exit 1
+  fi
+  CSV_DIR="$CSV_DIR_ARG"
+else
+  CSV_DIR="$COMPANY_DIR/理杏仁财报"
+fi
 mkdir -p "$COMPANY_DIR" "$PDF_DIR" "$CSV_DIR"
 
 # ---------- 工具函数 ----------
@@ -96,11 +110,11 @@ log()  { echo "$1"; }
 # 判定报表页是否"无数据": 只看「数据选项」锚点后 300 字
 # 不能全文 grep "无数据" —— 页面他处(导航栏/指标说明)出现该词会误判整张表未收录
 page_no_data() {
-  python3 - <<'PY' 2>/dev/null
-import json, re
+  python3 - "$LX_TMP/.lx_pagetext.txt" <<'PY' 2>/dev/null
+import json, re, sys
 seg = ''
 try:
-    raw = open('/tmp/.lx_pagetext.txt', encoding='utf-8', errors='replace').read()
+    raw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
     m = re.search(r'"text":\s*"((?:[^"\\]|\\.)*)"', raw, re.S)
     t = json.loads('"' + m.group(1) + '"') if m else ''
     i = t.find('数据选项')
@@ -113,13 +127,13 @@ PY
 snap_new_file() {  # $1=匹配通配符, 输出新增的第一个文件 basename
   local pattern="$1"; local before after
   before=$(ls "$DOWNLOADS" 2>/dev/null | grep -iE "$pattern" | sort)
-  echo "$before" > /tmp/.lx_before.txt
+  echo "$before" > "${LX_TMP}/.lx_before.txt"
   return 0
 }
 take_new_file() {  # 与 snap_new_file 配对, 输出新增文件
   local pattern="$1"
-  ls "$DOWNLOADS" 2>/dev/null | grep -iE "$pattern" | sort > /tmp/.lx_after.txt
-  comm -13 /tmp/.lx_before.txt /tmp/.lx_after.txt | head -1
+  ls "$DOWNLOADS" 2>/dev/null | grep -iE "$pattern" | sort > "${LX_TMP}/.lx_after.txt"
+  comm -13 "${LX_TMP}/.lx_before.txt" "${LX_TMP}/.lx_after.txt" | head -1
 }
 # ---------- 空壳校验（老板 2026-09-19 明确要求建检查机制）----------
 # 背景: 脚本曾静默产出 3872 字节空壳 PDF(有文件名、打不开), 老板误以为"下载成功"。
@@ -142,8 +156,7 @@ annual_content_ok() {  # $1=pdf路径 $2=年份
   # ⚠️ 教训(2026-09-20): 旧版按路径存在就选，结果选中了无 pymupdf 的解释器 →
   #    函数走"缺工具则放行"分支 → 所有错件都被判合格，防线形同虚设。
   local cands c
-  cands=("${LIXINGER_PY:-}" "$VENV/bin/python3" "$VENV/bin/python" \
-         "/Users/niusl321/.workbuddy/binaries/python/envs/default/bin/python3" python3)
+  cands=("${LIXINGER_PY:-}" "$VENV/bin/python3" "$VENV/bin/python" python3)
   for c in "${cands[@]}"; do
     [ -z "$c" ] && continue
     if { [ -x "$c" ] || command -v "$c" >/dev/null 2>&1; } && "$c" -c 'import pymupdf' >/dev/null 2>&1; then
@@ -276,10 +289,10 @@ wait_download() {
   DL_NEW=""; local prev_cr=""
   for i in $(seq 1 "$maxr"); do
     "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-    snap_dl > /tmp/.lx_dl_after.txt
-    DL_NEW=$(new_pdf_line /tmp/.lx_dl_before.txt /tmp/.lx_dl_after.txt)
+    snap_dl > "${LX_TMP}/.lx_dl_after.txt"
+    DL_NEW=$(new_pdf_line "${LX_TMP}/.lx_dl_before.txt" "${LX_TMP}/.lx_dl_after.txt")
     [ -n "$DL_NEW" ] && return 0
-    cr=$(new_cr_line /tmp/.lx_dl_before.txt /tmp/.lx_dl_after.txt)
+    cr=$(new_cr_line "${LX_TMP}/.lx_dl_before.txt" "${LX_TMP}/.lx_dl_after.txt")
     if [ -n "$cr" ]; then
       cand=$(printf '%s' "$cr" | sed -E 's/^[0-9]+ //')
       # 接受条件(满足其一): ① 体积已停止增长  ② 末尾已有 %%EOF/startxref(说明写完了)
@@ -296,31 +309,25 @@ wait_download() {
   return 1
 }
 
-# ---------- 自动登录（老板 2026-09-19 亲授）----------
-# 理杏仁登录态会过期/丢失。此时【不要换数据源】(曾因此绕去东方财富/巨潮/上交所/新浪全部碰壁),
-# 正确做法: 点击页面右上角「登录/注册」—— 账号密码已保存在浏览器里, 点一下即自动登录。
+# ---------- 自动登录（统一交给 lixinger_login.sh）----------
+# 判据统一: 页面文本含账号 = 已登录。「登录/注册」链接在已登录态也可能残留, 不能用来判。
+# 2026-11-10 实测: 公司详情页 body.innerText 同样含账号, 首页判据可复用。
+# 必须在开会话前调用: 登录脚本会自建并关闭自己的会话。
 login_if_needed() {
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_login.txt 2>&1
-  if ! grep -q "登录/注册" /tmp/.lx_login.txt; then
-    echo "  ✅ 理杏仁已登录"
-    return 0
-  fi
-  echo "  🔑 未登录 → 点击右上角「登录/注册」(浏览器已保存账号密码)"
-  "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录/注册" --action click >/dev/null 2>&1
-  "$CLI" browser_wait --sessionId "$SID" --seconds 4 >/dev/null 2>&1
-  # 若弹出登录弹窗且有「登录」按钮(表单已由浏览器自动填充), 再点一次提交
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_login2.txt 2>&1
-  if grep -qE "\[[0-9]+_[a-z0-9_]+\]<button 登录" /tmp/.lx_login2.txt; then
-    "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "登录" --action click >/dev/null 2>&1
-    "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
-  fi
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_login3.txt 2>&1
-  if grep -q "登录/注册" /tmp/.lx_login3.txt; then
-    echo "  ⚠️ 自动登录未生效 → 请在浏览器里手动登录一次后重跑"
+  local LOGIN_SH="$SCRIPT_DIR/lixinger_login.sh"
+  local CREDS="$LX_CREDS"
+  local OUT="$LX_TMP/.lx_login_run.txt"
+  if [ ! -f "$LOGIN_SH" ] || [ ! -f "$CREDS" ]; then
+    echo "  ⚠️ 自动登录不可用(缺 $LOGIN_SH 或 $CREDS) → 依赖浏览器残留登录态"
     return 1
   fi
-  echo "  ✅ 自动登录成功"
-  return 0
+  if bash "$LOGIN_SH" > "$OUT" 2>&1; then
+    sed 's/^/  /' "$OUT" | head -12
+    return 0
+  fi
+  echo "  ❌ 自动登录失败 → 继续尝试浏览器残留登录态"
+  sed 's/^/     /' "$OUT" | head -12
+  return 1
 }
 
 OK_COUNT=0; SKIP_COUNT=0; FAIL_LIST=""; NO_DATA_LIST=""; HSHARE_LIST=""; SUSPECT_LIST=""
@@ -338,6 +345,9 @@ echo "── 开跑前治理下载目录 ──"
 delete_twin_orphans_under "$DEST"
 relocate_orphans
 
+# ---------- 自动登录（先于开会话，保证 Cookie 就位）----------
+login_if_needed || true
+
 # ---------- 开会话 ----------
 # 任何异常退出都关会话, 防浏览器 tab 泄漏
 cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
@@ -347,15 +357,18 @@ cleanup() { "$CLI" browser_end_session --sessionId "$SID" >/dev/null 2>&1; }
 "$CLI" browser_wait --sessionId "$SID" --seconds 5 >/dev/null 2>&1
 trap cleanup EXIT INT TERM
 log "✅ 会话已开启"
-# 登录态自检: 过期就自动点一下登录(浏览器已保存账号密码), 不要换数据源
-login_if_needed || true
 
 # ============================================================
 # 第一部分: 6 类 CSV 导出（标准流程）
 # ============================================================
 if [ "$SKIP_CSV" -eq 0 ]; then
-declare -a TICKERS=("bs" "ps" "cfs" "m" "operation-revenue-constitution" "operating-data")
-declare -a LABELS=("资产负债表" "利润表" "现金流量表" "财务指标" "营收构成" "经营数据")
+if [ "$MAIN_ONLY" -eq 1 ]; then
+  declare -a TICKERS=("bs" "ps" "cfs")
+  declare -a LABELS=("资产负债表" "利润表" "现金流量表")
+else
+  declare -a TICKERS=("bs" "ps" "cfs" "m" "operation-revenue-constitution" "operating-data")
+  declare -a LABELS=("资产负债表" "利润表" "现金流量表" "财务指标" "营收构成" "经营数据")
+fi
 
 for i in "${!TICKERS[@]}"; do
   T="${TICKERS[$i]}"; L="${LABELS[$i]}"
@@ -390,8 +403,8 @@ for i in "${!TICKERS[@]}"; do
   for _r in $(seq 1 8); do
     "$CLI" browser_wait --sessionId "$SID" --seconds 3 >/dev/null 2>&1
     "$CLI" browser_eval_content_js --sessionId "$SID" --script "document.body.innerText" \
-      > /tmp/.lx_pagetext.txt 2>&1
-    if grep -q '数据选项' /tmp/.lx_pagetext.txt 2>/dev/null; then CSV_READY=1; break; fi
+      > "${LX_TMP}/.lx_pagetext.txt" 2>&1
+    if grep -q '数据选项' "${LX_TMP}/.lx_pagetext.txt" 2>/dev/null; then CSV_READY=1; break; fi
   done
   if [ "$CSV_READY" -eq 0 ]; then
     echo "  ❌ 页面始终未渲染出「数据选项」(加载失败?), 跳过以免误判"
@@ -409,9 +422,9 @@ for i in "${!TICKERS[@]}"; do
   "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
 
   # 动态获取弹窗 index（每次都变！）
-  "$CLI" browser_snapshot --sessionId "$SID" > /tmp/.lx_pop.txt 2>&1
-  I1=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<input 壹' /tmp/.lx_pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
-  I2=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<a 时间横排 - 降序' /tmp/.lx_pop.txt | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
+  "$CLI" browser_snapshot --sessionId "$SID" > "${LX_TMP}/.lx_pop.txt" 2>&1
+  I1=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<input 壹' "${LX_TMP}/.lx_pop.txt" | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
+  I2=$(grep -oE '\[[0-9]+_[a-z0-9_]+\]<a 时间横排 - 降序' "${LX_TMP}/.lx_pop.txt" | grep -oE '[0-9]+_[a-z0-9_]+' | head -1)
 
   if [ -z "$I2" ]; then
     echo "  ❌ 未找到排序选项(时间横排-降序)，跳过"
@@ -428,7 +441,19 @@ for i in "${!TICKERS[@]}"; do
       echo "  ❌ 未找到单位选项(壹)，跳过"
       FAIL_LIST="$FAIL_LIST $L"; continue
     fi
-    "$CLI" browser_click_element --sessionId "$SID" --index "$I1" >/dev/null 2>&1
+    # 🔴 单位「壹」是 Bootstrap 隐藏 radio(input.btn-check)，browser_click_element 点快照index无效
+    #   (实测下出来仍是「亿」，且表头「货币:元」会骗过肉眼) → 必须用 JS 对隐藏 input 派发原生 click
+    UNIT_JS='(function(){var rs=Array.from(document.querySelectorAll("input.btn-check"));for(var i=0;i<rs.length;i++){var r=rs[i];var l=document.querySelector("label[for=\""+r.id+"\"]");if(l&&l.innerText.trim()==="壹"){r.click();return "ok";}}return "notfound";})()'
+    URES=$("$CLI" browser_eval_content_js --sessionId "$SID" --script "$UNIT_JS" 2>&1)
+    # 返回可能是裸 ok 或 JSON 包裹("ok")，两种都认，避免格式差异导致整批失败
+    if printf '%s' "$URES" | grep -q 'notfound'; then
+      echo "  ❌ 单位选项(壹)未找到"
+      FAIL_LIST="$FAIL_LIST $L[单位选择失败]"; continue
+    fi
+    if ! printf '%s' "$URES" | grep -qw 'ok'; then
+      echo "  ❌ 单位选择返回异常: $(printf '%s' "$URES" | tr '\n' ' ' | cut -c1-200)"
+      FAIL_LIST="$FAIL_LIST $L[单位选择失败]"; continue
+    fi
     "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
     "$CLI" browser_click_element --sessionId "$SID" --index "$I2" >/dev/null 2>&1
   fi
@@ -466,6 +491,7 @@ done
 # ============================================================
 # 第二部分: 员工数据（DOM 提取兜底 —— UI 导出在自动化下不触发）
 # ============================================================
+if [ "$MAIN_ONLY" -eq 0 ]; then
 echo "───── [7/7] 员工数据 (DOM提取) ─────"
 # 幂等: 已存在且非空 → 跳过(不打开页面)。要重导加 --force。
 if [ "$FORCE" -eq 0 ] && [ -s "$CSV_DIR/${NAME}_员工数据_全体员工.csv" ]; then
@@ -478,14 +504,14 @@ else
 # 取"行数最多"的表格, 不硬编码 table[1](不同公司页面表格数量可能不同)
 "$CLI" browser_eval_content_js --sessionId "$SID" --script \
 "JSON.stringify((function(){var ts=Array.from(document.querySelectorAll('table'));var best=null,bestN=0;for(var i=0;i<ts.length;i++){var n=ts[i].querySelectorAll('tr').length;if(n>bestN){bestN=n;best=ts[i];}}var tb=best||ts[1];return Array.from(tb.querySelectorAll('tr')).map(function(tr){return Array.from(tr.querySelectorAll('td,th')).map(function(td){return td.innerText.trim()})})})())" \
-> /tmp/.lx_emp_raw.txt 2>&1
+> "$LX_TMP/.lx_emp_raw.txt" 2>&1
 
-rm -f /tmp/.lx_emp_fail
-python3 - "$NAME" "$CSV_DIR" <<'PY'
+rm -f "$LX_TMP/.lx_emp_fail"
+python3 - "$NAME" "$(lx_native_path "$CSV_DIR")" "$LX_TMP/.lx_emp_raw.txt" "$LX_TMP/.lx_emp_fail" <<'PY'
 import json, csv, sys, os, datetime
-name, outdir = sys.argv[1], sys.argv[2]
+name, outdir, rawpath, failpath = sys.argv[1:5]
 try:
-    raw = open('/tmp/.lx_emp_raw.txt').read()
+    raw = open(rawpath).read()
     obj = json.loads(raw[raw.find('{'):raw.rfind('}')+1])
     data = json.loads(obj['text'])
     years = data[0][1:]
@@ -498,14 +524,15 @@ try:
     print(f'  ✅ {os.path.basename(out)}  ({len(rows)}个指标 × {len(years)}年)')
 except Exception as e:
     print(f'  ❌ 员工数据提取失败: {e}')
-    open('/tmp/.lx_emp_fail','w').write('1')
+    open(failpath, 'w').write('1')
 PY
 # 员工数据失败要计入统计, 不能静默(否则最终报告显示"成功"但文件缺失)
-if [ -f /tmp/.lx_emp_fail ]; then
-  rm -f /tmp/.lx_emp_fail
+if [ -f "$LX_TMP/.lx_emp_fail" ]; then
+  rm -f "$LX_TMP/.lx_emp_fail"
   FAIL_LIST="$FAIL_LIST 员工数据"
 fi
 fi   # 员工数据幂等守卫
+fi   # main-only 跳过员工数据
 
 fi  # SKIP_CSV  ← CSV部分到此结束(PDF独立在后, 故 --skip-csv 不会连带跳过PDF)
 
@@ -582,6 +609,41 @@ ann_active_page() {
     --script "(()=>{const a=document.querySelector('ul.pagination li.active');return 'PAGE='+(a?a.textContent.trim():'-')})()" 2>/dev/null \
     | grep -oE 'PAGE=[0-9]+' | head -1 | cut -d= -f2
 }
+# ---------- 🔴 翻页判据改用「页面内容签名」(2026-11-10 修茅台翻页失效) ----------
+# 旧逻辑用 ann_active_page 读 ul.pagination li.active 页码做"是否翻页成功"判定,
+#   实测在点完 PDF 链接之后该读取偶发返回空 → 误判"已到最后一页" → 第1页采完就 break,
+#   10 年只下到 1 年(茅台 2026-11-10 实测)。现改为比对【本页年报年份集合】签名,
+#   签名变了=真翻过去了, 与页码 DOM 是否可读无关。
+#   用 JS 直读 DOM(querySelectorAll 拿全部 <a>, 不依赖视口/滚动), 瞬时完成。
+page_sig_js() {
+  "$CLI" browser_eval_content_js --sessionId "$SID" \
+    --script "(()=>{try{const as=[...document.querySelectorAll('a')].filter(x=>/\.pdf/i.test(x.getAttribute('href')||'')&&/([0-9]{4}\\s*年?年度报告)/.test(x.textContent));const s=[...new Set(as.map(x=>x.textContent.match(/[0-9]{4}\\s*年?年度报告/)[0]))].sort().join('|');return 'SIG='+s;}catch(e){return 'SIG=';}})()" 2>/dev/null \
+    | grep -oE 'SIG=[^"]*' | head -1 | cut -c5-
+}
+# 点「下一页 ›」: 优先 JS 直点(不依赖快照坐标, 比 text 点击稳); 末页时 › 带 disabled → 返回 1
+click_next() {
+  local r
+  r=$("$CLI" browser_eval_content_js --sessionId "$SID" \
+    --script "(()=>{const lis=[...document.querySelectorAll('ul.pagination li')];const t=lis.find(li=>li.textContent.trim()==='›'&&!li.classList.contains('disabled'));if(!t)return 'NONEXT';const a=t.querySelector('a')||t;a.click();return 'CLICKED';})()" 2>/dev/null)
+  if echo "$r" | grep -q CLICKED; then return 0; fi
+  if echo "$r" | grep -q NONEXT; then return 1; fi
+  # 兜底: text 点击(极少数 JS 未生效时)
+  "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "›" --action click >/dev/null 2>&1
+  return 0
+}
+# 当前是否仍停留在公告页（2026-11-10 新增）
+# 用途: PDF 阶段用 browser_click_element 触发下载（旧 browser_download_file 已被 CLI 1.6.3 删除）。
+#   若某条 <a> 没带 download 语义，点击会把标签导航走 → 后续快照 index 全失效。失败路径用它判一下。
+# ⚠️ 只能取 location.href：文档禁止 JS 访问 document.cookie，用 cookie 绕反爬这条路走不通。
+ann_onsite() {
+  local u
+  u=$("$CLI" browser_eval_content_js --sessionId "$SID" --script "'URL='+location.href" 2>/dev/null \
+      | grep -oE 'URL=https?://[^"[:space:]]*' | head -1 | cut -c5-)
+  case "$u" in
+    *lixinger.com/*announcement*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 # 滚动整页并合并快照: 步长按视口重叠覆盖, 范围用实际页高(不再写死 12000)
 collect_page() {
   local h pos step=700
@@ -593,39 +655,14 @@ collect_page() {
     "$CLI" browser_eval_content_js --sessionId "$SID" \
       --script "window.scrollTo(0,${pos});'ok'" >/dev/null 2>&1
     "$CLI" browser_wait --sessionId "$SID" --seconds 1 >/dev/null 2>&1
-    "$CLI" browser_snapshot --sessionId "$SID" >> /tmp/.lx_annual.txt 2>&1
+    # 2026-11-10: 同时写【本页快照】与【累积快照】—— 本页那份用来当场提取索引下载，
+    #   累积那份只用于后面的「覆盖度自检」，两者职责分开，别再混用。
+    "$CLI" browser_snapshot --sessionId "$SID" >> "${LX_TMP}/.lx_pg_now.txt" 2>&1
+    cat "${LX_TMP}/.lx_pg_now.txt" >> "${LX_TMP}/.lx_annual.txt"
     pos=$((pos+step))
   done
 }
-: > /tmp/.lx_annual.txt
-PAGE_NO=1
-while [ "$PAGE_NO" -le "$MAX_PAGES" ]; do
-  collect_page
-  # 已覆盖到起始年份 → 收工(不必翻满)
-  OLDY=$( { cat /tmp/.lx_annual.txt; } \
-          | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -n | head -1 )
-  if [ -n "$OLDY" ] && [ "$OLDY" -le "$START_YEAR" ] 2>/dev/null; then
-    echo "  ✅ 已覆盖到 ${OLDY}年(需 ${START_YEAR}年起)，停止翻页"
-    break
-  fi
-  BEF=$(ann_active_page)
-  "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "›" --action click >/dev/null 2>&1
-  AFT=""; CHANGED=0
-  for _w in 1 2 3 4 5 6; do
-    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
-    AFT=$(ann_active_page)
-    if [ -n "$AFT" ] && [ "$AFT" != "$BEF" ]; then CHANGED=1; break; fi
-  done
-  if [ "$CHANGED" -eq 0 ]; then
-    echo "  ⏭️  已到最后一页(第 ${BEF:-?} 页)，停止翻页"
-    break
-  fi
-  PAGE_NO=$((PAGE_NO+1))
-  echo "  📄 翻到第 ${AFT} 页(已采分钟级累积快照)"
-done
-echo "  📄 共采集 ${PAGE_NO} 页"
-
-# 精确匹配年报链接（排除「摘要」「半年度报告」）
+# ---------- 年报链接精确匹配（排除「摘要」「半年度报告」）----------
 # ⚠️ 关键教训(2026-09-19 实测, 华能国际 sh600011):
 #   理杏仁上同一份年报可能有两个条目 —— A股正文标题带后缀「…年度报告全文」,
 #   而 H 股版本标题为「华能国际H股2022年年度报告」(无后缀, 繁体)。
@@ -636,84 +673,54 @@ echo "  📄 共采集 ${PAGE_NO} 页"
 # 公司名部分仍用 [^/>]* 通配(兼容简称/全称混用, 如 中国核电 vs 中国核能电力股份有限公司)
 FULL_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}[[:space:]]*年?年度报告全文/>points to a pdf"
 PLAIN_RE="\[[0-9]+_[a-z0-9_]+\]<a [^/>]*[0-9]{4}[[:space:]]*年?年度报告/>points to a pdf"
-grep -oE "$FULL_RE"  /tmp/.lx_annual.txt | sort -u > /tmp/.lx_pdf_full.txt
-grep -oE "$PLAIN_RE" /tmp/.lx_annual.txt | sort -u > /tmp/.lx_pdf_plain.txt
-# 候选年份 = 两轮命中合并去重(天然去掉多屏重复, 不再需要 DONE_YEARS 守卫)
-YEARS_ALL=$( { cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt; } \
-             | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -u )
-echo "  发现 $(cat /tmp/.lx_pdf_full.txt /tmp/.lx_pdf_plain.txt | wc -l | tr -d ' ') 个年报链接, 覆盖年份: $(echo $YEARS_ALL | tr '\n' ' ')"
 
-START_YEAR=$(( $(date +%Y) - YEARS ))
+# ---------- 单年份下载（2026-11-10 从主循环抽成函数）----------
+# 🔴 为什么必须抽出来 + 改成「边翻边下」:
+#   旧结构 = 把所有页滚动采集完（累积快照）→ 统一进年份循环下载。
+#   但下载循环开跑时浏览器【停在最后一页】，而 IDX 是各页快照里的元素索引 ——
+#   只有最后一页的索引还对得上，其余年份全都会「点到当前页的随便一个元素」。
+#   这就是长期存在的「坑 4 张冠李戴」的真正根因。
+#   实测铁证（2026-11-10 国电电力 --years 3，修好下载命令后第一次跑）:
+#     2023（恰在最后一页）→ 5.9MB 正确；2024 → 6 页公告；2025 → 5 页公告，都被内容校验拒收。
+#   现在: 每翻到一页，就地把它那几年的 PDF 下掉，IDX 永远取自【当前页】的快照。
+process_pdf_year() {   # 全局副作用: OK_COUNT/SKIP_COUNT/FAIL_LIST/HSHARE_LIST/SUSPECT_LIST
+  local YEAR="$1" LINE="" IDX="" DST="" NEW="" ATTEMPT=0 VER=""
 
-# ---------- 🔴 覆盖度自检（2026-09-20 新增，防止"静默只抓到一年"）----------
-# 背景: 公告列表是【最新在前 + 分页】的。实测 2026-09-20 出现「发现 1 个年报链接,
-#   覆盖年份: 2025」—— 2016~2024 全在后续页, 脚本却会当作"已最新"照常收工。
-#   这类静默漏抓最危险: 日志看着正常, 数据却缺 9 年。
-# 判据: 拿【已在库的年份】跟【本次发现的年份】比 —— 库里有而这次没发现的, 就是漏抓。
-#   （首次下载时库为空, 无法用此判据; 此时若发现年份明显少于 --years 也会提示。）
-LIBYEARS=$(ls -1 "$PDF_DIR" 2>/dev/null | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -u)
-MISSING_YEARS=""
-if [ -n "$LIBYEARS" ]; then
-  for _y in $LIBYEARS; do
-    case " $(echo $YEARS_ALL | tr '\n' ' ') " in
-      *" $_y "*) : ;;
-      *) MISSING_YEARS="$MISSING_YEARS $_y" ;;
-    esac
-  done
-  if [ -n "$MISSING_YEARS" ]; then
-    echo "  🔴 覆盖度告警: 库内已有但本次【未发现】的年份:${MISSING_YEARS}"
-    echo "       极可能是公告列表分页/筛选失效导致抓不全 → 请勿当作「已是最新」!"
-    echo "       排查方向: 公告页是否分页、年度报告分类筛选是否可用(详见 SKILL.md「已知未决问题」)"
-  fi
-fi
-
-# bash 3.2 + set -u 下空数组展开会崩(unbound variable), 必须守卫
-if [ -z "$YEARS_ALL" ]; then
-  echo "  ⚠️  公告页未匹配到年报链接, 跳过PDF阶段(不中断后续)"
-  echo "      ⚠️ 注意: 这可能是【列表没渲染出来/筛选失效】而不是数据源没有 ——"
-  echo "         2026-09-20 实测 search-key 筛选已失效(页面显示「没有相关数据」), 已改用 type=all;"
-  echo "         若反复出现请检查公告页结构是否又变"
-else
-HSHARE_LIST=""   # 记录"只有 H 股版可用"的年份, 汇总时告警
-for YEAR in $YEARS_ALL; do
   # --only-years 过滤（精准补漏/换版, 避免整家重跑）
   if [ -n "$ONLY_YEARS" ]; then
     case "$ONLY_YEARS" in
       *",${YEAR},"*) : ;;
-      *) continue ;;
+      *) return 0 ;;
     esac
   fi
   if [ "$YEAR" -lt "$START_YEAR" ]; then
     echo "  ⏭️  ${YEAR}年(超出${YEARS}年范围, 起点${START_YEAR}) 跳过"
-    continue
+    return 0
   fi
 
   # 版本优先级（老板 2026-09-19 要求: A+H 公司优先 A 股）:
   #   ① A股「…年度报告全文」(简体正文)  →  ② A股无后缀版  →  ③ 才轮到 H股繁体版
   # 华能国际 2020 同时有「H股2020年年度报告」与「2020年年度报告」两个条目,
   # 旧逻辑 sort 后 head -1 抓到排前的 H 股版(实测 2020/2021/2022 三年均为繁体版)
-  VER=""
-  LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告全文" /tmp/.lx_pdf_full.txt | head -1)
+  LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告全文" "${LX_TMP}/.lx_pg_full.txt" | head -1)
   [ -n "$LINE" ] && VER="A股全文"
   if [ -z "$LINE" ]; then
-    LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告" /tmp/.lx_pdf_plain.txt | grep -vE "H[ ]?股" | head -1)
+    LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告" "${LX_TMP}/.lx_pg_plain.txt" | grep -vE "H[ ]?股" | head -1)
     [ -n "$LINE" ] && VER="A股"
   fi
   if [ -z "$LINE" ]; then
-    LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告" /tmp/.lx_pdf_plain.txt | head -1)
+    LINE=$(grep -E "${YEAR}[[:space:]]*年?年度报告" "${LX_TMP}/.lx_pg_plain.txt" | head -1)
     [ -n "$LINE" ] && VER="H股繁体"
   fi
   IDX=$(echo "$LINE" | grep -oE '^\[[0-9]+_[a-z0-9_]+\]' | tr -d '[]')
-  if [ -z "$IDX" ]; then
-    continue
-  fi
+  [ -z "$IDX" ] && return 0
 
   # 幂等: 目标已存在且校验通过 → 跳过, 绝不重复下载有效文件。
   # (老板 2026-09-19 明确要求: 补漏只下缺失/损坏的年份, 不许整家重下)
   DST="$PDF_DIR/${NAME}_${YEAR}年年度报告.pdf"
   if [ "$FORCE" -eq 0 ] && valid_pdf "$DST"; then
     echo "  ⏭️  ${YEAR}年 已存在且校验通过($(fsize "$DST")B), 跳过"
-    SKIP_COUNT=$((SKIP_COUNT+1)); continue
+    SKIP_COUNT=$((SKIP_COUNT+1)); return 0
   fi
   if [ -f "$DST" ]; then
     # 区分两种情况, 别把 --force 的版本升级误报成"文件损坏"
@@ -727,13 +734,29 @@ for YEAR in $YEARS_ALL; do
 
   # 轮询等待(最多50s/次): 大PDF + 「未确认 NNNNNN.crdownload」定型都需要时间
   # 实测(2026-09-19): 每个会话的【第一条】下载经常不触发(浏览器需热身) → 失败自动重试 3 次
-  NEW=""; ATTEMPT=0
+  #
+  # 🔴 2026-11-10 修复（PDF 全断的真根因）:
+  #   qqbrowser-skill 1.6.3 把 browser_download_file / browser_download_url 两个子命令
+  #   **整条删掉了**（`--help` 的合法命令清单里已无任何 download 项），旧调用静默失败 ——
+  #   日志只写「未检测到下载」，**退出码仍是 0**，10 年 PDF 全断也看不出来。
+  #   且 1.6.0 被强制拦截升级（blocked until you upgrade），回滚不可行。
+  # 解法（实测验证）: 对公告页里的 PDF <a> 直接 browser_click_element 就能触发浏览器真实下载。
+  #   顺带解决了反爬 —— 上交所 static.sse.com.cn 有 acw_sc__v2 JS 挑战，curl 直下拿到的
+  #   是 3.8KB 挑战页（不是 PDF），而浏览器自己会过这个挑战。
+  #   → 下载检测(wait_download) / 归档(archive) / 内容校验(annual_content_ok) 全部原样复用。
   while [ "$ATTEMPT" -lt 3 ]; do
     ATTEMPT=$((ATTEMPT+1))
-    snap_dl > /tmp/.lx_dl_before.txt
-    "$CLI" browser_download_file --sessionId "$SID" --index "$IDX" >/dev/null 2>&1
+    snap_dl > "${LX_TMP}/.lx_dl_before.txt"
+    "$CLI" browser_click_element --sessionId "$SID" --index "$IDX" >/dev/null 2>&1
     if wait_download 25; then NEW="$DL_NEW"; break; fi
     NEW=""
+    # 防呆: 万一该 <a> 没带 download 语义, 点击会把标签导航到 PDF 预览页 —— 一旦导航，
+    #   本页后续年份的快照 index 全部失效。失败路径下检查并回退（成功路径不查，省调用）。
+    if ! ann_onsite; then
+      echo "  ⚠️  ${YEAR}年 点击后页面已离开公告页, 回退…"
+      "$CLI" browser_go_back --sessionId "$SID" >/dev/null 2>&1
+      "$CLI" browser_wait --sessionId "$SID" --seconds 3 >/dev/null 2>&1
+    fi
     [ "$ATTEMPT" -lt 3 ] && echo "  🔁 ${YEAR}年 未触发下载, 重试(${ATTEMPT}/3)…"
   done
   if [ -n "$NEW" ]; then
@@ -754,8 +777,99 @@ for YEAR in $YEARS_ALL; do
   else
     echo "  ⚠️  ${YEAR}年 未检测到下载"; FAIL_LIST="$FAIL_LIST PDF${YEAR}"
   fi
+  return 0
+}
+
+HSHARE_LIST=""                 # 记录"只有 H 股版可用"的年份, 汇总时告警
+: > "${LX_TMP}/.lx_annual.txt"        # 累积快照: 只给「覆盖度自检」用
+: > "${LX_TMP}/.lx_done_years.txt"    # 已处理年份: 防同一条目跨页重复下载
+PAGE_NO=1
+while [ "$PAGE_NO" -le "$MAX_PAGES" ]; do
+  : > "${LX_TMP}/.lx_pg_now.txt"
+  collect_page
+
+  # 🔴 每页采完【立刻】下本页的年报（见 process_pdf_year 上方注释：索引不能跨页复用）
+  grep -oE "$FULL_RE"  "${LX_TMP}/.lx_pg_now.txt" | sort -u > "${LX_TMP}/.lx_pg_full.txt"
+  grep -oE "$PLAIN_RE" "${LX_TMP}/.lx_pg_now.txt" | sort -u > "${LX_TMP}/.lx_pg_plain.txt"
+  PY=$( { cat "${LX_TMP}/.lx_pg_full.txt" "${LX_TMP}/.lx_pg_plain.txt"; } \
+        | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -u )
+  for _y in $PY; do
+    case " $(tr '\n' ' ' < "${LX_TMP}/.lx_done_years.txt") " in
+      *" $_y "*) continue ;;   # 同一条目出现在多页 → 已下过, 跳过
+    esac
+    process_pdf_year "$_y"
+    echo "$_y" >> "${LX_TMP}/.lx_done_years.txt"
+  done
+
+  # 已覆盖到起始年份 → 收工(不必翻满)
+  OLDY=$( cat "${LX_TMP}/.lx_annual.txt" \
+          | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -n | head -1 )
+  if [ -n "$OLDY" ] && [ "$OLDY" -le "$START_YEAR" ] 2>/dev/null; then
+    echo "  ✅ 已覆盖到 ${OLDY}年(需 ${START_YEAR}年起)，停止翻页"
+    break
+  fi
+  # ---------- 🔴 翻页判据: 用页面内容签名比对(不再读脆弱的 li.active 页码) ----------
+  BEF_SIG=$(page_sig_js)
+  if ! click_next; then
+    echo "  ⏭️  已到最后一页(下一页按钮不可用)，停止翻页"
+    break
+  fi
+  CHANGED=0; AFT_SIG=""
+  for _w in 1 2 3 4 5 6; do
+    "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
+    AFT_SIG=$(page_sig_js)
+    if [ -n "$AFT_SIG" ] && [ "$AFT_SIG" != "$BEF_SIG" ]; then CHANGED=1; break; fi
+  done
+  if [ "$CHANGED" -eq 0 ]; then
+    # 兜底: text 方式再点一次 ›, 再等再采(极少数 JS 点击未生效时)
+    "$CLI" browser_find_and_act --sessionId "$SID" --by text --value "›" --action click >/dev/null 2>&1
+    for _w in 1 2 3 4 5 6; do
+      "$CLI" browser_wait --sessionId "$SID" --seconds 2 >/dev/null 2>&1
+      AFT_SIG=$(page_sig_js)
+      if [ -n "$AFT_SIG" ] && [ "$AFT_SIG" != "$BEF_SIG" ]; then CHANGED=1; break; fi
+    done
+  fi
+  if [ "$CHANGED" -eq 0 ]; then
+    echo "  ⏭️  已到最后一页，停止翻页"
+    break
+  fi
+  PAGE_NO=$((PAGE_NO+1))
+  echo "  📄 翻到第 ${PAGE_NO} 页"
 done
-fi  # PDF_LINES 非空守卫
+echo "  📄 共采集 ${PAGE_NO} 页"
+
+YEARS_ALL=$(sort -u "${LX_TMP}/.lx_done_years.txt" 2>/dev/null || true)
+echo "  发现 $(echo "$YEARS_ALL" | grep -c . || true) 个年报年份, 覆盖: $(echo $YEARS_ALL | tr '\n' ' ')"
+
+# bash 3.2 + set -u 下空数组展开会崩(unbound variable), 必须守卫
+if [ -z "$YEARS_ALL" ]; then
+  echo "  ⚠️  公告页未匹配到年报链接, 跳过PDF阶段(不中断后续)"
+  echo "      ⚠️ 注意: 这可能是【列表没渲染出来/筛选失效】而不是数据源没有 ——"
+  echo "         2026-09-20 实测 search-key 筛选已失效(页面显示「没有相关数据」), 已改用 type=all;"
+  echo "         若反复出现请检查公告页结构是否又变"
+fi
+
+# ---------- 🔴 覆盖度自检（2026-09-20 新增，防止"静默只抓到一年"）----------
+# 背景: 公告列表是【最新在前 + 分页】的。实测 2026-09-20 出现「发现 1 个年报链接,
+#   覆盖年份: 2025」—— 2016~2024 全在后续页, 脚本却会当作"已最新"照常收工。
+#   这类静默漏抓最危险: 日志看着正常, 数据却缺 9 年。
+# 判据: 拿【已在库的年份】跟【本次发现的年份】比 —— 库里有而这次没发现的, 就是漏抓。
+#   （首次下载时库为空, 无法用此判据; 此时若发现年份明显少于 --years 也会提示。）
+LIBYEARS=$(ls -1 "$PDF_DIR" 2>/dev/null | grep -oE '[0-9]{4}[[:space:]]*年?年度报告' | grep -oE '[0-9]{4}' | sort -u)
+MISSING_YEARS=""
+if [ -n "$LIBYEARS" ] && [ -n "$YEARS_ALL" ]; then
+  for _y in $LIBYEARS; do
+    case " $(echo $YEARS_ALL | tr '\n' ' ') " in
+      *" $_y "*) : ;;
+      *) MISSING_YEARS="$MISSING_YEARS $_y" ;;
+    esac
+  done
+  if [ -n "$MISSING_YEARS" ]; then
+    echo "  🔴 覆盖度告警: 库内已有但本次【未发现】的年份:${MISSING_YEARS}"
+    echo "       极可能是公告列表分页/筛选失效导致抓不全 → 请勿当作「已是最新」!"
+    echo "       排查方向: 公告页是否分页、年度报告分类筛选是否可用(详见 SKILL.md「已知未决问题」)"
+  fi
+fi
 fi  # SKIP_PDF
 
 # ---------- 收尾 ----------
@@ -764,7 +878,7 @@ fi  # SKIP_PDF
 # 收尾清理: 目标目录 ._ AppleDouble 垃圾文件
 # ⚠️ 用自带 python 删除, 不用 dot_clean —— dot_clean 是外部二进制, 沙箱下会被拦截(unlink 被拒)
 if command -v python3 >/dev/null 2>&1; then
-python3 - "$COMPANY_DIR" <<'PY'
+python3 - "$(lx_native_path "$COMPANY_DIR")" <<'PY'
 import os, sys
 n1 = 0
 for root, dirs, files in os.walk(sys.argv[1]):
@@ -797,3 +911,13 @@ echo " 目录: $COMPANY_DIR"
 echo "   PDF: $(ls -1 "$PDF_DIR" 2>/dev/null | wc -l | tr -d ' ') 个"
 echo "   CSV: $(ls -1 "$CSV_DIR"/*.csv 2>/dev/null | wc -l | tr -d ' ') 个"
 echo "=========================================="
+
+# ---------- 退出码（2026-11-10 新增）----------
+# 真实事故: CLI 1.6.3 删掉 browser_download_file 后，10 年 PDF 全断，日志只有
+#   「⚠️未检测到下载」，**退出码仍是 0** → 批处理与自动化会把"全断"当成"跑完"。
+# 现在: 有失败项一律非 0，让上层（batch_download / 定时任务 / agent）能真的发现。
+if [ -n "$FAIL_LIST" ]; then
+  echo " ⛔ 存在失败项，退出码 1 —— 请按上面 ❌失败项 复核，不要当作已完整。"
+  exit 1
+fi
+exit 0

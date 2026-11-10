@@ -2,6 +2,7 @@
 
 > 全部来自 **2026-09 真机实测**：17 家电力公司（A 股 + 港股混合），含批量驱动、验收盘点、补漏决策树。
 > 单公司流程见 SKILL.md 与 `02-lixinger-internals.md`；本文解决「**多公司批量 + 出错了怎么补**」。
+> 日志示例里的 `$LX_TMP` 由 `scripts/lib_platform.sh` 导出，Windows 上是 `C:/...` 形式，不要再写死 `/tmp`。
 
 ---
 
@@ -27,7 +28,7 @@
 set -uo pipefail
 SCRIPT=~/.workbuddy/skills/lixinger-download/scripts/download_company.sh
 DEST="/Volumes/KIOXIA/上市公司研究/电力系统/01-发电运营（15家）"   # 用当前数据集实际位置
-LOG=/tmp/lx_batch.log
+LOG=$LX_TMP/lx_batch.log
 : > "$LOG"
 # 用普通数组，别用 declare -A（本机按 zsh 语义跑，关联数组报 syntax error）
 COMPANIES=(
@@ -57,7 +58,8 @@ echo "ALL_DONE" | tee -a "$LOG"
 
 ## 三、批量后必做：盘「真实落盘」（**不要信退出码**）
 
-⚠️ **退出码 0 ≠ 成功**：脚本内部个别年份下载失败**不会**改变退出码，只在日志里打 ⚠️/❌。
+⚠️ **退出码 0 ≠ 齐全**：2026-11-10 起有失败项会 `exit 1`（此前 PDF 全断也是 0），
+但「理杏仁未收录 / 已存在跳过 / H股繁体替代」都不算失败 —— 退出码 0 仍可能缺内容。
 实测 12 家全部退出码 0，但真盘发现 4 家整段 0 份、3 家零星缺年。
 
 ```python
@@ -116,7 +118,7 @@ for n in names:
   - 应对：关键补丁**前台跑**（把 timeout 放长），或跑完**立即核验落盘**——任务记录丢了，但文件通常已正常写入。
 - 后台跑时挂「进度观察器」实现定期播报：
   ```bash
-  bash -c 'sleep 2400; grep -E "开始|结束|ALL_DONE" /tmp/lx_batch.log | tail -20'
+  bash -c 'sleep 2400; grep -E "开始|结束|ALL_DONE" $LX_TMP/lx_batch.log | tail -20'
   ```
 - **每家跑完就 grep 日志的 ❌/⚠️ 行**，不要等 12 家全跑完才发现前几家全废。
 
@@ -140,7 +142,7 @@ bash scripts/download_ipo.sh --name 三峡能源 --market sh --code 600905 --des
 ```bash
 # 1) 打开上面 URL → scroll_to_bottom → 分段 scroll（0~9000px）+ 多次 snapshot 合并
 # 2) 抓每行：grep -oE "\[[0-9]+_[a-z0-9_]+\]<a [^/>]*/>points to a pdf" | sort -u
-# 3) 逐行取 idx + 标题 → browser_download_file → 轮询 ~/Downloads 取新 pdf → 归档
+# 3) 逐行取 idx + 标题 → browser_click_element（1.6.3 起代替已删除的 browser_download_file）→ 轮询 ~/Downloads 取新 pdf → 归档
 # 4) 命名 {公司名}_{标题去掉公司名前缀}.pdf，放 {公司}/招股资料/
 # 5) 已存在且校验通过就跳过（防重复）
 ```
