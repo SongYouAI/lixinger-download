@@ -6,6 +6,15 @@ version: 2.2.0
 description: 理杏仁(lixinger.com)财报批量自动下载。当用户要下载理杏仁的公司财报/Excel/CSV/年报PDF、招股说明书/招股意向书/IPO发行文件、批量抓取财务数据时使用。驱动已登录的 QQ 浏览器自动导出资产负债表、利润表、现金流量表、财务指标、营收构成、经营数据、员工数据(7类CSV,均10年) + 10年PDF年报 + IPO分类下的招股/发行文件，按「公司 / 年报PDF / 招股资料 / 理杏仁财报」目录结构归档。支持 A股(sh/sz)与港股(hk)通道，缺失年份可用港交所 hkexnews 直链补。无人值守，全程免费。
 description_zh: 理杏仁财报批量自动下载：驱动已登录的浏览器自动导出 7 类财报 CSV（10 年）、10 份年报 PDF 与 IPO 招股/发行文件，按公司规范目录归档，支持 A 股与港股，全程免费、无人值守。账号密码由使用者自备，交给 Agent 自动登录。
 description_en: Batch-download Lixinger (lixinger.com) financial data: drive a logged-in browser to export 7 categories of 10-year CSV reports, 10 annual-report PDFs and IPO prospectus/issuance files into a tidy per-company folder structure. Supports A-shares and HK-listed companies, fully unattended and free. Account credentials are supplied by the user and handed to the Agent for automatic sign-in.
+examples_zh:
+- "下载贵州茅台的理杏仁财报，把 10 年年报 PDF 和 7 类 CSV 存到桌面"
+- "批量下载多家电力公司近 10 年的年报和财务报表"
+- "补下长江电力 2016—2025 年里缺的那几年年报"
+examples_en:
+- "Download Kweichow Moutai's Lixinger reports: 10 years of annual PDFs and 7 CSV categories to my Desktop"
+- "Batch-download 10-year annual reports and financial statements for a list of power companies"
+- "Fill in the missing annual-report years for China Yangtze Power from 2016 to 2025"
+author: "SongYouAI"
 agent_created: true
 ---
 
