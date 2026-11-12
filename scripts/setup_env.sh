@@ -112,18 +112,35 @@ fi
 
 # ---- 4. 浏览器 ----
 echo "[4/6] 浏览器"
+# 任意带 WorkBuddy 浏览器扩展的 Chromium 均可：Edge / Chrome / QQ 浏览器，不再硬绑 QQ 浏览器。
 BROWSER_FOUND=0
+_note_chromium() {
+  say_ok "$1 已安装（可用，需在其扩展商店装入 WorkBuddy 浏览器扩展）"; BROWSER_FOUND=1
+}
 case "$LX_OS" in
   mac)
-    if [ -d "/Applications/QQBrowser.app" ]; then say_ok "QQ 浏览器已安装（macOS）"; BROWSER_FOUND=1; fi
-    [ -d "/Applications/Google Chrome.app" ] && say_ok "Chrome 已安装（备选通道）"
+    [ -d "/Applications/Microsoft Edge.app" ] && _note_chromium "Microsoft Edge"
+    [ -d "/Applications/Google Chrome.app" ] && _note_chromium "Google Chrome"
+    [ -d "/Applications/QQBrowser.app" ] && _note_chromium "QQ 浏览器"
     ;;
   linux)
-    command -v qqbrowser >/dev/null 2>&1 && { say_ok "QQ 浏览器已安装（Linux）"; BROWSER_FOUND=1; }
-    command -v google-chrome >/dev/null 2>&1 && say_ok "Chrome 已安装（备选通道）"
+    command -v microsoft-edge >/dev/null 2>&1 && _note_chromium "Microsoft Edge"
+    command -v google-chrome >/dev/null 2>&1 && _note_chromium "Google Chrome"
+    command -v qqbrowser >/dev/null 2>&1 && _note_chromium "QQ 浏览器"
     ;;
   windows)
-    # Windows 版 QQ 浏览器常见落地位置：用户级 / 机器级 / 带版本号子目录
+    _edge_dirs=(
+      "$(lx_slash "${PROGRAMFILES:-C:/Program Files}")/Microsoft/Edge/Application"
+      "$(lx_slash "${PROGRAMFILES_X86:-C:/Program Files (x86)}")/Microsoft/Edge/Application"
+      "/c/Program Files/Microsoft/Edge/Application"
+      "/c/Program Files (x86)/Microsoft/Edge/Application"
+    )
+    _chrome_dirs=(
+      "$(lx_slash "${PROGRAMFILES:-C:/Program Files}")/Google/Chrome/Application"
+      "$(lx_slash "${PROGRAMFILES_X86:-C:/Program Files (x86)}")/Google/Chrome/Application"
+      "/c/Program Files/Google/Chrome/Application"
+      "/c/Program Files (x86)/Google/Chrome/Application"
+    )
     _qq_dirs=(
       "$(lx_slash "${LOCALAPPDATA:-}")/Tencent/QQBrowser"
       "$(lx_slash "${LOCALAPPDATA:-}")/Tencent/QQBrowser/Application"
@@ -132,15 +149,21 @@ case "$LX_OS" in
       "/c/Program Files/Tencent/QQBrowser"
       "/d/Program Files (x86)/Tencent/QQBrowser"
     )
-    for _d in "${_qq_dirs[@]}"; do
-      [ -d "$_d" ] && { say_ok "QQ 浏览器已安装（Windows）: $_d"; BROWSER_FOUND=1; break; }
-    done
-    if [ "$BROWSER_FOUND" -eq 0 ] && command -v QQBrowser.exe >/dev/null 2>&1; then
-      say_ok "QQ 浏览器在 PATH 中"; BROWSER_FOUND=1
-    fi
+    for _d in "${_edge_dirs[@]}";   do [ -d "$_d" ] && { _note_chromium "Microsoft Edge"; break; }; done
+    for _d in "${_chrome_dirs[@]}"; do [ -d "$_d" ] && { _note_chromium "Google Chrome"; break; }; done
+    for _d in "${_qq_dirs[@]}";     do [ -d "$_d" ] && { _note_chromium "QQ 浏览器"; break; }; done
+    [ "$BROWSER_FOUND" -eq 0 ] && command -v msedge.exe     >/dev/null 2>&1 && _note_chromium "Microsoft Edge"
+    [ "$BROWSER_FOUND" -eq 0 ] && command -v chrome.exe      >/dev/null 2>&1 && _note_chromium "Google Chrome"
+    [ "$BROWSER_FOUND" -eq 0 ] && command -v QQBrowser.exe   >/dev/null 2>&1 && _note_chromium "QQ 浏览器"
     ;;
 esac
-[ "$BROWSER_FOUND" -eq 0 ] && say_bad "未找到 QQ 浏览器 → 下载 https://browser.qq.com/ （Linux 请走 Playwright 备选通道）"
+if [ "$BROWSER_FOUND" -eq 0 ]; then
+  say_bad "未找到任何受支持的 Chromium 浏览器（Edge / Chrome / QQ 浏览器）"
+  echo "       → 任选其一安装，并在其扩展商店装入 WorkBuddy 浏览器扩展：" >&2
+  echo "         Edge   https://www.microsoft.com/edge" >&2
+  echo "         Chrome https://www.google.com/chrome/" >&2
+  echo "         QQ浏览器 https://browser.qq.com/" >&2
+fi
 
 # ---- 5. 守护进程 ----
 echo "[5/6] 守护进程"

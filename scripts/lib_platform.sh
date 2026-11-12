@@ -42,23 +42,32 @@ fi
 LX_VENV="${LIXINGER_VENV:-$LX_HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl}"
 
 # ---- CLI 探测 ----
-# 🔴 Windows 专项（2026-11-12 真机实测）：
+# 🔴 Windows 专项（2026-11-12 真机实测）+ 跨平台统一入口：
 #   pip 生成的 $VENV/Scripts/qqbrowser-skill.exe 是【未签名】setuptools launcher，
 #   启用 WDAC / Device Guard 的 Windows 会直接拒绝执行：
 #     Git Bash → "Permission denied"(126)；cmd.exe → "已被组织 Device Guard 阻止"(199)。
 #   原代码只会判断 -x（文件存在且可执行位为真），完全测不出这种"系统策略拦截"，
 #   于是自检显示 CLI 就位，但所有 browser_* 调用全部失败。
-#   解法：Windows 上优先用同目录 wrapper，以受信任的 python.exe 驱动 x5use.server:main。
-#   仅当 venv 里确实装了 x5use 时才启用，避免"CLI 未安装却显示就位"。
+#   解法：所有平台统一优先用同目录 wrapper，以受信任的 python 驱动 x5use.server:main；
+#   Windows 上为绕过 WDAC 必须走这里，macOS/Linux 走这里则统一由 wrapper 给 serve
+#   注入外部调用模式、去掉「QQ 浏览器必须已安装」的硬约束。仅当 venv 里确实装了
+#   x5use 时才启用，避免"CLI 未安装却显示就位"。
 _LX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _LX_WRAPPER="$_LX_SCRIPT_DIR/qqbrowser_skill_cli.sh"
-_LX_WIN_PY=""
-for _c in "$LX_VENV/Scripts/python.exe" "$LX_VENV/Scripts/python"; do
-  [ -x "$_c" ] && { _LX_WIN_PY="$_c"; break; }
+# 跨平台探测可用 python（wrapper 用它驱动 x5use.server:main）
+_LX_PY=""
+for _c in "$LX_VENV/Scripts/python.exe" "$LX_VENV/Scripts/python" \
+          "$LX_VENV/bin/python3" "$LX_VENV/bin/python"; do
+  if [ -x "$_c" ]; then _LX_PY="$_c"; break; fi
 done
 
-if [ "$LX_OS" = "windows" ] && [ -f "$_LX_WRAPPER" ] && [ -n "$_LX_WIN_PY" ] \
-   && "$_LX_WIN_PY" -c 'import x5use.server' >/dev/null 2>&1; then
+# 优先用同目录 wrapper：
+#   · Windows 上绕过未签名 .exe 被 WDAC / Device Guard 拦截（Permission denied / 199）；
+#   · 所有平台统一走 wrapper，由它对 `serve` 注入外部调用模式，去掉「QQ 浏览器
+#     必须已安装」的硬约束（任意带 WorkBuddy 扩展的 Chromium：Edge / Chrome / QQ 浏览器 均可）。
+#   仅当 venv 里确实没装 x5use 时，才回退到 bin/Scripts 的直接 console_script。
+if [ -f "$_LX_WRAPPER" ] && [ -n "$_LX_PY" ] \
+   && "$_LX_PY" -c 'import x5use.server' >/dev/null 2>&1; then
   chmod +x "$_LX_WRAPPER" 2>/dev/null || true
   LX_CLI="$_LX_WRAPPER"
 elif [ -x "$LX_VENV/Scripts/qqbrowser-skill.exe" ]; then
@@ -178,7 +187,9 @@ lx_require_daemon() {
   [ -x "$cli" ] || { echo "❌ 浏览器 CLI 不可用: ${cli}" >&2; return 1; }
   st="$("$cli" status 2>/dev/null)"
   if ! printf '%s' "$st" | grep -q "Daemon is running"; then
-    echo "❌ 浏览器守护进程未运行 → 先执行: bash scripts/setup_env.sh --install" >&2
+    echo "❌ 浏览器守护进程未运行 → 请先在 WorkBuddy 设置→智能体→浏览器操控 开启开关并装好扩展" >&2
+    echo "   （任意带 WorkBuddy 扩展的 Chromium：Edge / Chrome / QQ 浏览器 均可，不再要求 QQ 浏览器）" >&2
+    echo "   扩展装好后若仍不在运行，可（可选）执行 bash scripts/setup_env.sh --install 让本 skill 起一个外部模式守护进程。" >&2
     echo "   （当前 CLI: ${cli}）" >&2
     return 1
   fi

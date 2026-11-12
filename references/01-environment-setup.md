@@ -2,8 +2,9 @@
 
 > 目标：照着本文把环境装好并跑通。
 >
-> 🔴 **测试范围（先看这条）**：本 skill **只在 macOS + QQ 浏览器上真机实测过**；
-> **Windows / Linux 从未在真机上跑过一次**，能不能用、会踩什么坑，都不知道。
+> 🔴 **测试范围（先看这条）**：端到端下载**最早在 macOS + QQ 浏览器上真机实测过**；
+> **Windows / Linux 从未在真机完整跑过端到端下载**，能不能用、会踩什么坑，都不知道。
+> 浏览器通道已放开：**任意带 WorkBuddy 扩展的 Chromium（Edge / Chrome / QQ 浏览器）都能驱动，不再硬要求装 QQ 浏览器**。
 > 下面 Windows / Linux 的命令是**按代码推演的部署步骤，不是验证过的方案**。
 >
 > 🔴 **Windows 终端约束**：本 skill 全是 `.sh`（bash）脚本，只能在 **Git Bash / MSYS2 / WSL** 里跑。
@@ -31,7 +32,7 @@
 ![WorkBuddy 设置 → 智能体 → 浏览器操控](https://newphotobed.oss-cn-shanghai.aliyuncs.com/img/clipboard-2026-11-10T23-32-20-809Z-c6734de9.png)
 
 > 不开这个开关 → CLI `status` 显示 `Connected clients: 0`，所有下载脚本都点不动页面。
-> 主通道是 **QQ 浏览器**；Chrome / Edge 是备选通道（能力边界见 `05-browser-matrix.md`），至少装你要用的那一个。
+> 浏览器通道已放开：**Edge / Chrome / QQ 浏览器** 任意一种装上 WorkBuddy 扩展即可（能力边界见 `05-browser-matrix.md`），不再要求特意装 QQ 浏览器。
 
 ### 0.2 关掉浏览器下载设置里的两个开关
 
@@ -69,9 +70,9 @@
 | 1 | Python | ≥ 3.9（推荐 3.11+） | 运行 qqbrowser-skill CLI | ✅ 必须 |
 | 2 | Python venv | 随 Python 自带 | 隔离依赖，不污染系统 | ✅ 推荐 |
 | 3 | `qqbrowser-skill` | 最新 | 浏览器自动化 CLI（Python 包） | ✅ 必须（主通道） |
-| 4 | QQ 浏览器 | 最新版 | 被驱动的浏览器 | ✅ 必须（主通道） |
+| 4 | 浏览器（任意 Chromium + WorkBuddy 扩展） | 最新版 | 被驱动的浏览器：Edge / Chrome / QQ 浏览器 均可 | ✅ 必须（装其一并装扩展即可，不再强求 QQ 浏览器） |
 | 5 | 理杏仁账号 | 已注册（免费/会员均可） | 登录态 | ✅ 必须 |
-| 6 | Chrome + Playwright | 备选 | 无 QQ 浏览器时的回退路径 | ⭕ 备选 |
+| 6 | Chrome + Playwright | 备选 | 仅当无法使用 WorkBuddy 扩展时的深度回退（Edge/Chrome/QQ 浏览器 + 扩展已是主路径，通常不需要） | ⭕ 极少用 |
 
 ---
 
@@ -115,15 +116,16 @@ python3 -m venv "$VENV"
 > 💡 **重要**：技能商店安装的往往只是 SKILL.md 说明书，**CLI 本体需要自行 pip 安装**。
 > 若提示找不到包，先升级 pip：`"$VENV/bin/pip" install -U pip`
 
-### 步骤 4：安装 QQ 浏览器（主通道）
+### 步骤 4：安装浏览器（任意带 WorkBuddy 扩展的 Chromium）
 
 | 系统 | 下载 |
 |------|------|
-| macOS | https://browser.qq.com/mac/ |
-| Windows | https://browser.qq.com/ |
-| Linux | QQ 浏览器无官方 Linux 版 → **走备选通道（Playwright + Chrome）** |
+| macOS | **Edge** https://www.microsoft.com/edge ／ **Chrome** https://www.google.com/chrome/ ／ **QQ 浏览器** https://browser.qq.com/mac/ |
+| Windows | **Edge** https://www.microsoft.com/edge ／ **Chrome** https://www.google.com/chrome/ ／ **QQ 浏览器** https://browser.qq.com/ |
+| Linux | QQ 浏览器无官方 Linux 版；用 **Chrome**（https://www.google.com/chrome/）或 **Chromium** 并装 WorkBuddy 扩展 |
 
-安装完成后**打开一次 QQ 浏览器**，让它完成初始化。
+> 三者任选其一即可，**装好后务必在其扩展商店装入 WorkBuddy 浏览器扩展**（或开发者模式手动加载）。
+> 安装完成后**打开一次该浏览器**，让它完成初始化。
 
 ### 步骤 5：写入理杏仁账号（一次性，自动登录前提）
 
@@ -132,7 +134,7 @@ python3 -m venv "$VENV"
 | 项 | 说明 |
 |---|---|
 | **谁提供** | **使用者自己**。本 skill 与本仓库**不含任何理杏仁账号密码**，也不代购、不代注册 |
-| **怎么交给 Agent** | 最省事的做法：**直接把账号和密码发给 Agent**，让它按下面格式写进 `creds.json`（仓库外、权限 600、已 gitignore）。之后 `scripts/lixinger_login.sh` 会自己判登录态、填表、提交，**你不用手工登录 QQ 浏览器**；账号过期换号时，改这个文件重跑即可 |
+| **怎么交给 Agent** | 最省事的做法：**直接把账号和密码发给 Agent**，让它按下面格式写进 `creds.json`（仓库外、权限 600、已 gitignore）。之后 `scripts/lixinger_login.sh` 会自己判登录态、填表、提交，**你不用手工登录（任意受支持浏览器均可）**；账号过期换号时，改这个文件重跑即可 |
 | **获取渠道** | ① **官方渠道**：理杏仁官网注册 / 购买会员，稳定、有售后；② **二手交易平台**（俗称「海鲜市场」，即闲鱼）：常见共享号 / 租借号，便宜但**有效期短、容易过期，且有账号安全与合规风险**，请自行判断并承担后果 |
 | **⛔ 绝不能做** | 把真实账号密码写进 `SKILL.md`、提交到 Git、贴到公开 Issue 或群里 —— **本仓库是公开的**，push 出去就等于泄露 |
 
@@ -192,7 +194,7 @@ bash scripts/setup_env.sh --install # 缺失项自动安装
 - ✅ Python 版本
 - ✅ venv 是否存在
 - ✅ qqbrowser-skill CLI
-- ✅ QQ 浏览器 / Chrome 是否安装
+- ✅ 受支持浏览器（Edge / Chrome / QQ 浏览器）是否安装
 - ✅ 守护进程状态
 - ✅ 浏览器连接数
 
@@ -200,9 +202,11 @@ bash scripts/setup_env.sh --install # 缺失项自动安装
 
 ---
 
-## 四、备选通道：无 QQ 浏览器时（Playwright + Chrome）
+## 四、Playwright 回退通道（通常已不需要）
 
-> 状态：⚠️ **本路径未在理杏仁场景完整实测**，需自行调试，作为无 QQ 浏览器时的回退方案。
+> 状态：⚠️ **本路径未在理杏仁场景完整实测**，仅作为无法使用 WorkBuddy 浏览器扩展时的深度兜底。
+> 因为浏览器通道已放开为任意带 WorkBuddy 扩展的 Chromium（Edge / Chrome / QQ 浏览器），
+> **绝大多数情况下直接用 Edge / Chrome + WorkBuddy 扩展即可**，无需 Playwright。
 
 ```bash
 PWVENV=~/.workbuddy/binaries/python/envs/lixinger-pw
@@ -226,7 +230,7 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 
 - [ ] `python3 --version` ≥ 3.9
 - [ ] venv 已创建，qqbrowser-skill CLI 可执行
-- [ ] QQ 浏览器已安装且能正常打开网页
+- [ ] 受支持浏览器（Edge / Chrome / QQ 浏览器 之一）已安装且能正常打开网页
 - [ ] `creds.json` 已写入，`bash scripts/lixinger_login.sh --check` 输出 `当前状态: IN`
 - [ ] `bash scripts/selftest.sh` 退出码 0（静态检查，非可用性证明）
 - [ ] `qqbrowser-skill status` 显示 `Daemon is running` 且 `Connected clients ≥ 1`
@@ -249,7 +253,7 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 | `qqbrowser-skill.exe: Permission denied`(126) / 「已被组织 Device Guard 阻止」(199) | WDAC 拦截未签名 pip launcher → 用 `scripts/qqbrowser_skill_cli.sh`；`lib_platform.sh` 已自动切换 |
 | `setup_env.sh --install` 报 `bin/pip: No such file or directory` | 旧版在创建 venv 前就把 pip 路径快照成 `bin/`；v2.2-winfix 已在建 venv 后重新探测 |
 | 年报 PDF 全部「归档失败」 | venv 缺 `pymupdf`（或解释器候选漏了 `Scripts/python.exe`）→ `Scripts/python.exe -m pip install pymupdf` |
-| `serve --daemon` 报 `QQ Browser is not installed` | CLI 硬前置；需管理员权限安装 QQ 浏览器，再在 WorkBuddy 设置里开启浏览器控制并装扩展 |
+| `serve --daemon` 报 `QQ Browser is not installed` | 已绕过：`serve` 现在自动以外部调用模式跳过该检查。若仍出现，确认走的是 `scripts/qqbrowser_skill_cli.sh`（wrapper）而非裸 `.exe`，且 `lib_platform.sh` 已正确选用它；仍不行就先在 WorkBuddy 设置里开启浏览器控制并装扩展 |
 
 ---
 
@@ -259,9 +263,10 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 > 并据此修复了 5 处 Windows 兼容缺陷（详见交付的《Windows 验证与修复报告》）。
 > 已验证：平台识别、路径转换、UTF-8 中文、静态自检、venv/CLI 安装、CLI 实调、
 > 两道 Python 验收脚本、PDF 平台原语。
-> 🔴 **仍未验证**：端到端真实下载。因为 `qqbrowser-skill serve --daemon` 强制要求
-> 已安装 QQ 浏览器，且安装需管理员权限 + 需在 WorkBuddy 设置里开启浏览器控制并安装扩展。
-> 这三项属于使用者侧前置，不是脚本缺陷；补齐后按步骤 6 验收即可。
+> 🔴 **仍未验证**：端到端真实下载（报表页渲染、自动登录、PDF/CSV 落盘）。
+> 现已去掉「必须装 QQ 浏览器」的硬前置——`serve` 自动以外部调用模式启动，任意带 WorkBuddy 扩展的
+> Chromium 均可驱动；需要的使用者侧前置是「开启 WorkBuddy 浏览器操控 + 装扩展 + 守护进程 Connected clients ≥ 1」，
+> 补好后按步骤 6 验收即可。
 
 ### 支持范围（v2.2-winfix 实测）
 
@@ -292,7 +297,7 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
    `C:/Users/<你>/.workbuddy/skills/lixinger-download`。
    **保留 `.gitattributes` / `.gitignore`；`.sh` 必须保持 LF** —— 别用记事本另存，否则变 CRLF 并报
    `$'\r': command not found`。
-2. **装软件**：Python ≥3.9（**勾选 Add Python to PATH**）、Git for Windows、QQ 浏览器；浏览器先打开一次完成初始化。
+2. **装软件**：Python ≥3.9（**勾选 Add Python to PATH**）、Git for Windows、任一 Chromium 浏览器（Edge / Chrome / QQ 浏览器，装其一并装好 WorkBuddy 扩展）；浏览器先打开一次完成初始化。
 3. **建 venv、装 CLI、起守护进程**（以下都在 **Git Bash** 里执行）：
 
    ```bash
@@ -316,9 +321,9 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 
    Windows 常只有 `python.exe` 没有 `python3`；`lib_platform.sh` 会自动把脚本里的 `python3` 调用转发过去，
    **不用手工建别名**。
-   `serve --daemon` 还有一道硬前置：**QQ 浏览器必须已安装**（CLI 自身检查，未装直接退出 1），
-   且静默安装需要**管理员权限**。装好浏览器后还需在
-   **WorkBuddy 设置 → 智能体 → 浏览器操控** 打开开关并安装对应扩展，否则 `Connected clients: 0`。
+   `serve --daemon` 的硬前置**已绕过**：wrapper 对 `serve` 自动注入外部调用模式（`--call-mode qbotclaw`），
+   跳过 x5use 自身的「QQ 浏览器未安装」检查，任意带 WorkBuddy 扩展的 Chromium 均可驱动。
+   前提是在 **WorkBuddy 设置 → 智能体 → 浏览器操控** 打开开关并安装对应扩展，否则 `Connected clients: 0`。
 
 4. **写凭证**：按本文步骤 5 写 `~/.config/lixinger-download/creds.json`（Git Bash 里即
    `C:/Users/<你>/.config/lixinger-download/creds.json`）。没有凭证就只能依赖浏览器残留登录态。
@@ -345,7 +350,7 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 
 ### 已知限制
 
-- 整条链路（QQ 浏览器扩展 + 自动登录 + PDF/CSV 落盘 + 两道验收）**未在 Windows 真机跑过**，会遇到什么坑未知。
+- 整条链路（任意 Chromium 扩展 + 自动登录 + PDF/CSV 落盘 + 两道验收）**未在 Windows 真机跑过**，会遇到什么坑未知。
 - `cleanup_downloads.sh --trash` 仅支持 macOS 回收站；其他平台会明确报错退出。
 - Chrome/Edge 扩展通道无员工数据，能力边界见 [`05-browser-matrix.md`](05-browser-matrix.md)。
 - WSL 跨边界通信未验证。

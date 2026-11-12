@@ -2,13 +2,14 @@
 
 > **一句话**：告诉它公司名，它自动从 [理杏仁](https://www.lixinger.com) 把这家公司的 **7 类财报 CSV（10 年）+ 10 年 PDF 年报 + IPO 招股/发行文件** 全套下载好，按「公司 / 年报PDF / 招股资料」规范归档。**无人值守、全程免费。**
 
-一个把「重复下载财报」这件苦力活沉淀成资产的 WorkBuddy Skill。驱动**你已登录理杏仁的 QQ 浏览器**，复用真实登录态，模拟人工完成「翻页 → 导出 → 归档」全流程。
+一个把「重复下载财报」这件苦力活沉淀成资产的 WorkBuddy Skill。驱动**你已登录理杏仁的浏览器**（任意带 WorkBuddy 扩展的 Chromium：Edge / Chrome / QQ 浏览器 均可，不再要求装 QQ 浏览器），复用真实登录态，模拟人工完成「翻页 → 导出 → 归档」全流程。
 
-> 本 Skill 的所有流程与坑位均来自**真机实测**（macOS + QQ 浏览器；长江电力单家跑通 + **17 家电力公司批量验证**），不是纸上方案。
+> 本 Skill 的所有流程与坑位均来自**真机实测**（最早在 macOS + QQ 浏览器；长江电力单家跑通 + **17 家电力公司批量验证**），不是纸上方案。
 >
 > ✅ **v2.2-winfix（2026-11-12）**：Windows 11 + Git Bash 已完成真机部署与验证，修复 5 处 Windows 兼容缺陷
 > （详见交付的《Windows 验证与修复报告》）。静态自检、环境自检、CLI 实调、两道验收脚本均已跑通。
-> 🔴 **端到端真实下载仍待使用者侧前置**：需以管理员权限安装 QQ 浏览器、在 WorkBuddy
+> ✅ **浏览器通道已放开**：任意带 WorkBuddy 扩展的 Chromium（Edge / Chrome / QQ 浏览器）都能驱动，`serve` 自动以外部调用模式跳过浏览器前置检查，**不再硬要求装 QQ 浏览器**。
+> 🔴 **端到端真实下载仍待使用者侧前置**：装任意带 WorkBuddy 扩展的 Chromium（无需特意装 QQ 浏览器）、在 WorkBuddy
 > 设置→智能体→浏览器操控打开开关并装好扩展、确认 `Connected clients ≥ 1`。Linux 从未测试。
 > Windows 部署步骤见 [`references/01-environment-setup.md`](references/01-environment-setup.md) 第七节。
 
@@ -88,7 +89,7 @@
 |---|---|
 | Python ≥ 3.9 | 运行 `qqbrowser-skill` CLI |
 | `qqbrowser-skill` | 浏览器自动化 CLI（`pip install qqbrowser-skill`） |
-| QQ 浏览器 | [browser.qq.com](https://browser.qq.com/) 下载；**无 Linux 版**，Linux 走 Playwright 备选通道 |
+| 浏览器 | 任意带 **WorkBuddy 扩展**的 Chromium 均可：**Edge**（[官网](https://www.microsoft.com/edge)）/ **Chrome**（[官网](https://www.google.com/chrome/)）/ **QQ 浏览器**（[browser.qq.com](https://browser.qq.com/)，无 Linux 版）。**不再强要求 QQ 浏览器** |
 | 理杏仁账号 | **自己提供**，把账号密码交给 Agent 写入 `~/.config/lixinger-download/creds.json`（600，已 gitignore）；下载脚本开会话前自动调用 `scripts/lixinger_login.sh` 完成登录，无需人工登录 |
 
 #### 🔑 理杏仁账号：自己提供，交给 Agent 自动登录
@@ -169,7 +170,7 @@ done < companies.txt
 
 | 点 | 做法 |
 |---|---|
-| **登录态复用** | 驱动已登录的 QQ 浏览器真实会话，不破解、不重登 |
+| **登录态复用** | 驱动已登录理杏仁的浏览器（任意带 WorkBuddy 扩展的 Chromium）真实会话，不破解、不重登 |
 | **URL 直达** | 日期范围写进 URL（`start-date`/`end-date`），**免点「10 年」按钮**（该按钮文字带空格，极易定位失败） |
 | **弹窗 index 动态取** | 导出弹窗的选项 index 每次都变，脚本每次重新快照获取 |
 | **员工数据兜底** | 该页 UI 导出在自动化下不触发 → 用 DOM 提取表格 + 本地生成 CSV |

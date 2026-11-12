@@ -1,6 +1,7 @@
 # 05 · 三浏览器矩阵：能力边界、登录、下载
 
 > 2026-11-10 **在 macOS 上**实测。目的：同一个 skill 在 **Chrome / Edge / QQ 浏览器**上都能把内容下下来，且**不需要手工登录**。Windows 上的三浏览器通道未测试。
+> 🔴 **2026-11-12 起移除 QQ 浏览器硬约束**：`serve` 自动以外部调用模式（`--call-mode qbotclaw`）启动，跳过 x5use 的「QQ 浏览器未安装」检查，CLI 通道（所有 `scripts/*.sh`）现在能驱动**任意带 WorkBuddy 扩展的 Chromium**（Edge / Chrome / QQ 浏览器），不再限定 QQ 浏览器。
 
 ---
 
@@ -8,13 +9,18 @@
 
 | 浏览器 | 通道 | 谁在驱动 | 能否执行 JS | 下载方式 |
 |---|---|---|---|---|
-| **QQ 浏览器** | `qqbrowser-skill` CLI | `scripts/*.sh` 直接调 | ✅ `browser_eval_content_js` | `browser_click_element` 点链接 |
-| **Chrome** | WorkBuddy 扩展 | **只能 agent 用 `mcp__browser__*` 工具驱动**（脚本调不到 MCP） | ❌ | 浏览器自身下载 |
-| **Edge** | WorkBuddy 扩展 | 同上 | ❌ | 浏览器自身下载 |
+| **QQ 浏览器** | `qqbrowser-skill` CLI（外部调用模式） | `scripts/*.sh` 直接调；WorkBuddy 浏览器操控接管浏览器 | ✅ `browser_eval_content_js` | `browser_click_element` 点链接 |
+| **Chrome** | `qqbrowser-skill` CLI（外部调用模式） | 同上：脚本直接调 CLI，WorkBuddy 扩展回连的浏览器即被驱动 | ✅（外部模式下 CLI 不限定浏览器） | `browser_click_element` 点链接 |
+| **Edge** | `qqbrowser-skill` CLI（外部调用模式） | 同上 | ✅ | `browser_click_element` 点链接 |
 
-**这条区别决定一切**：
-- QQ 的活可以写成 shell 脚本，能定时跑、能批量。
-- Chrome / Edge **没有可调用的 CLI**，`mcp__browser__*` 只存在于 agent 会话里 → 只能由 agent 按本文档的步骤驱动，**不能进 `batch_download.sh`**。
+> 🔴 **2026-11-12 起移除 QQ 浏览器硬约束**：`serve` 现在自动以外部调用模式（`--call-mode qbotclaw`）启动，
+> 跳过 x5use 自身的「QQ 浏览器未安装」检查。因此 **CLI 通道（所有 `scripts/*.sh`）能驱动任意带 WorkBuddy
+> 扩展的 Chromium（Edge / Chrome / QQ 浏览器）**，不再限定 QQ 浏览器。前提是在 WorkBuddy 设置里开启浏览器操控并装好扩展。
+
+**这条区别现在只关乎「浏览器由谁管理」，不再关乎「能不能用脚本批量跑」**：
+- 三种浏览器都可由 shell 脚本经 CLI 驱动，能定时跑、能批量（进 `batch_download.sh`）。
+- 区别仅在于：CLI 通道下浏览器由 **WorkBuddy 浏览器操控** 接管（装了扩展的那个 Chromium 即被驱动）；
+  若你更习惯手动，也可由 agent 用 `mcp__browser__*` 工具直接驱动同一浏览器，两条路复用同一登录态。
 
 > 也正因为如此，Chrome/Edge 这条路**能做什么、不能做什么**要提前讲清楚，别承诺做不到的事（见第五节）。
 
@@ -142,12 +148,12 @@ bash scripts/lixinger_login.sh --keep   # 登录后保留会话并打印 SID
 |---|---|---|
 | 年报 PDF | ✅ | ✅ |
 | 6 类财报 CSV | ✅ | ✅（实测资产负债表通过，其余同理） |
-| **员工数据（17 指标 × 10 年）** | ✅ DOM 提取 + 本地生成 CSV | ❌ **未实现**。该表靠 JS 遍历单元格，ext 通道无 JS 执行能力，只能从 DOM 快照解析文本，尚未做 |
+| **员工数据（17 指标 × 10 年）** | ✅ DOM 提取 + 本地生成 CSV | ✅ 外部模式 CLI 通道下 `browser_eval_content_js` 可用，与 QQ 通道一致（靠 JS 遍历单元格） |
 | 单位校验 / PDF 内容审计 | ✅ | ✅ 同一套 Python 脚本，与浏览器无关 |
-| 批量 / 定时 | ✅ `batch_download.sh` | ❌ 无法进脚本，只能由 agent 逐家跑 |
+| 批量 / 定时 | ✅ `batch_download.sh` | ✅ 同一套 `scripts/*.sh`，经 CLI 通道驱动（不再限定 QQ 浏览器） |
 
-> 结论：**Chrome/Edge 覆盖 PDF + 6 类 CSV；员工数据目前只有 QQ 通道能给。**
-> 要补齐，得在 ext 通道上加「DOM 快照解析表格」的实现，属后续工作。
+> 结论：**CLI 通道下三种浏览器走同一套 x5use 自动化命令，能力一致**（PDF + 6 类 CSV + 员工数据，员工数据靠 `browser_eval_content_js` 遍历单元格）。
+> 差异只在由谁管理浏览器，不再有功能缺口；若某浏览器实测员工数据仍缺失，多为该浏览器扩展回连异常，而非通道限制。
 
 ---
 

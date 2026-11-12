@@ -6,7 +6,7 @@ displayName: 理杏仁财报批量下载
 display_name_en: Lixinger Financial Report Downloader
 summary: 自动下载理杏仁 10 年年报 PDF、7 类财报 CSV 与 IPO 招股文件，规范归档、无人值守
 version: 2.2.0
-description: 理杏仁(lixinger.com)财报批量自动下载。当用户要下载理杏仁的公司财报/Excel/CSV/年报PDF、招股说明书/招股意向书/IPO发行文件、批量抓取财务数据时使用。驱动已登录的 QQ 浏览器自动导出资产负债表、利润表、现金流量表、财务指标、营收构成、经营数据、员工数据(7类CSV,均10年) + 10年PDF年报 + IPO分类下的招股/发行文件，按「公司 / 年报PDF / 招股资料 / 理杏仁财报」目录结构归档。支持 A股(sh/sz)与港股(hk)通道，缺失年份可用港交所 hkexnews 直链补。无人值守，全程免费。
+description: 理杏仁(lixinger.com)财报批量自动下载。当用户要下载理杏仁的公司财报/Excel/CSV/年报PDF、招股说明书/招股意向书/IPO发行文件、批量抓取财务数据时使用。驱动已登录理杏仁的浏览器（任意带 WorkBuddy 扩展的 Chromium：Edge / Chrome / QQ 浏览器 均可，不再要求装 QQ 浏览器）自动导出资产负债表、利润表、现金流量表、财务指标、营收构成、经营数据、员工数据(7类CSV,均10年) + 10年PDF年报 + IPO分类下的招股/发行文件，按「公司 / 年报PDF / 招股资料 / 理杏仁财报」目录结构归档。支持 A股(sh/sz)与港股(hk)通道，缺失年份可用港交所 hkexnews 直链补。无人值守，全程免费。
 description_zh: 理杏仁财报批量自动下载：驱动已登录的浏览器自动导出 7 类财报 CSV（10 年）、10 份年报 PDF 与 IPO 招股/发行文件，按公司规范目录归档，支持 A 股与港股，全程免费、无人值守。账号密码由使用者自备，交给 Agent 自动登录。
 description_en: Batch-download Lixinger (lixinger.com) financial data: drive a logged-in browser to export 7 categories of 10-year CSV reports, 10 annual-report PDFs and IPO prospectus/issuance files into a tidy per-company folder structure. Supports A-shares and HK-listed companies, fully unattended and free. Account credentials are supplied by the user and handed to the Agent for automatic sign-in.
 examples_zh:
@@ -25,16 +25,18 @@ agent_created: true
 
 用浏览器自动化接管**已登录理杏仁**的浏览器，按公司批量导出 7 类财报 CSV（10 年）+ 10 份年报 PDF + IPO 分类下的招股/发行文件，自动归档到规范目录。
 
-> 本 skill 的所有流程与坑位均来自**真机实测**，且**只在 macOS + QQ 浏览器**上验证过
+> 本 skill 的所有流程与坑位均来自**真机实测**。端到端下载**最早在 macOS + QQ 浏览器**上跑通
 > （长江电力单家跑通 + 17 家电力公司批量验证 + 国电电力 / 贵州茅台回归）。
 >
 > ✅ **v2.2-winfix（2026-11-12）**：已在 **Windows 11 + Git Bash** 真机完成部署、静态自检、
 > 环境自检、CLI 实调与两道验收脚本验证，并修复 5 处 Windows 兼容缺陷
 > （WDAC launcher 拦截 / venv `bin|Scripts` 路径 / pymupdf 解释器候选 / `--install` 静默失败 / 无浏览器时假成功空转）。
 > `scripts/lib_platform.sh` 会自动选用 `scripts/qqbrowser_skill_cli.sh` 调用 CLI。
-> 🔴 **仍待前置**：端到端真实下载需要 ①管理员权限安装 QQ 浏览器 ②WorkBuddy 设置→智能体→浏览器操控
-> 打开开关并装好扩展 ③守护进程 `Connected clients ≥ 1`。详见 `references/01-environment-setup.md` 第七节。
-> Linux 仍未测试。
+> 🔴 **浏览器通道已放开**：**不再硬要求装 QQ 浏览器**。任意带 WorkBuddy 扩展的 Chromium
+> （**Edge / Chrome / QQ 浏览器**）都能驱动，`serve` 自动以外部调用模式跳过浏览器前置检查。
+> 🔴 **仍待前置**：端到端真实下载需要 ①装任意带 WorkBuddy 扩展的 Chromium（无需特意装 QQ 浏览器）
+> ②WorkBuddy 设置→智能体→浏览器操控 打开开关并装好扩展 ③守护进程 `Connected clients ≥ 1`。
+> 详见 `references/01-environment-setup.md` 第七节。Linux 仍未测试。
 
 ## 触发场景
 
@@ -670,7 +672,7 @@ done
 
 ### 浏览器通道
 
-- **QQ 浏览器**通道为实测验证路径；Chrome + Playwright 为备选（见环境文档，需自行调试）。
+- **浏览器通道已放开**：任意带 WorkBuddy 扩展的 Chromium（**Edge / Chrome / QQ 浏览器**）都能驱动，不再强依赖 QQ 浏览器；端到端实测以 macOS + QQ 浏览器 为主，其余通道原理相同（均由 WorkBuddy 扩展回连的守护进程驱动）。
 
 ---
 
