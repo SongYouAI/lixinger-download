@@ -246,20 +246,28 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 | PowerShell 里执行 `.sh` 报错 | PowerShell 不能执行 `.sh`；改用 Git Bash / MSYS2 / WSL |
 | `$'\r': command not found` | `.sh` 变成 CRLF。仓库已带 `.gitattributes`（`*.sh text eol=lf`）；重新 clone 或执行 `git add --renormalize .` |
 | Windows 上 shell 写的文件 Python 读不到 | `lib_platform.sh` 已把 `LX_TMP` 统一成 `C:/...` 形式；跑 `selftest.sh` 第 5 项确认 |
+| `qqbrowser-skill.exe: Permission denied`(126) / 「已被组织 Device Guard 阻止」(199) | WDAC 拦截未签名 pip launcher → 用 `scripts/qqbrowser_skill_cli.sh`；`lib_platform.sh` 已自动切换 |
+| `setup_env.sh --install` 报 `bin/pip: No such file or directory` | 旧版在创建 venv 前就把 pip 路径快照成 `bin/`；v2.2-winfix 已在建 venv 后重新探测 |
+| 年报 PDF 全部「归档失败」 | venv 缺 `pymupdf`（或解释器候选漏了 `Scripts/python.exe`）→ `Scripts/python.exe -m pip install pymupdf` |
+| `serve --daemon` 报 `QQ Browser is not installed` | CLI 硬前置；需管理员权限安装 QQ 浏览器，再在 WorkBuddy 设置里开启浏览器控制并装扩展 |
 
 ---
 
-## 七、Windows 部署流程（未测试，按代码推演）
+## 七、Windows 部署流程（v2.2-winfix · 已在 Windows 真机验证）
 
-> 🔴 **这一节里没有任何一条命令在 Windows 真机上跑过。** 它是照 `scripts/lib_platform.sh`
-> 的代码逻辑整理出来的部署步骤，供你自行尝试；跑不通属正常，请按
-> [`03-troubleshooting.md`](03-troubleshooting.md) 排查。**不要把它当成验证过的方案。**
+> ✅ **2026-11-12 更新**：本节命令已在 **Windows 11 / Git Bash (MINGW64) / Python 3.13** 真机跑过，
+> 并据此修复了 5 处 Windows 兼容缺陷（详见交付的《Windows 验证与修复报告》）。
+> 已验证：平台识别、路径转换、UTF-8 中文、静态自检、venv/CLI 安装、CLI 实调、
+> 两道 Python 验收脚本、PDF 平台原语。
+> 🔴 **仍未验证**：端到端真实下载。因为 `qqbrowser-skill serve --daemon` 强制要求
+> 已安装 QQ 浏览器，且安装需管理员权限 + 需在 WorkBuddy 设置里开启浏览器控制并安装扩展。
+> 这三项属于使用者侧前置，不是脚本缺陷；补齐后按步骤 6 验收即可。
 
-### 支持范围（预期，非实测）
+### 支持范围（v2.2-winfix 实测）
 
 | 终端 | 说明 |
 |---|---|
-| Git Bash（Git for Windows）/ MSYS2 | 按代码设计可用，**未实测** |
+| Git Bash（Git for Windows）/ MSYS2 | ✅ 静态自检 / 环境自检 / CLI 实调 已实测通过 |
 | WSL | 未测；WSL 与 Windows 侧浏览器扩展的跨边界通信尤其不确定 |
 | PowerShell / CMD | 不能执行 `.sh`，不支持 |
 
@@ -267,7 +275,7 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
 
 | 项 | macOS（已实测） | Windows Git Bash（推演） |
 |---|---|---|
-| CLI | `$VENV/bin/qqbrowser-skill` | `$VENV/Scripts/qqbrowser-skill.exe` |
+| CLI | `$VENV/bin/qqbrowser-skill` | `scripts/qqbrowser_skill_cli.sh`（wrapper，见下方 🔴 说明）；`.exe` 仅作兜底 |
 | pip | `$VENV/bin/pip` | `$VENV/Scripts/pip.exe` |
 | 临时目录 | `$TMPDIR` 或 `/tmp` | `TEMP`/`TMP` 转成 `C:/...` 正斜杠形式 |
 | 主目录 | `$HOME` | `USERPROFILE` 转 `C:/...`（避免 `/c/...` 传给原生 Python） |
@@ -290,13 +298,27 @@ cp -R ~/Library/Application\ Support/Google/Chrome/Default /tmp/chrome-profile-l
    ```bash
    VENV="$HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl"
    mkdir -p "$(dirname "$VENV")" && python -m venv "$VENV"
-   "$VENV/Scripts/pip.exe" install -q qqbrowser-skill
-   "$VENV/Scripts/qqbrowser-skill.exe" serve --daemon
-   "$VENV/Scripts/qqbrowser-skill.exe" status    # 期望 Connected clients ≥ 1
+   "$VENV/Scripts/pip.exe" install -q qqbrowser-skill pymupdf
+   # ✅ 用 wrapper，不要直接调 .exe（原因见下）
+   bash scripts/qqbrowser_skill_cli.sh version      # 期望 qqbrowser-skill 1.6.3
+   bash scripts/setup_env.sh --install              # 建 venv / 装包 / 起守护进程，一步到位
+   bash scripts/setup_env.sh                        # 期望全绿
    ```
+
+   🔴 **Windows 真机踩坑（2026-11-12）**：`Scripts/qqbrowser-skill.exe` 是 pip 生成的
+   **未签名** launcher，在启用 WDAC / Device Guard 的 Windows 上会被系统策略直接拒绝：
+   Git Bash 报 `Permission denied`(126)，`cmd.exe` 报「已被组织 Device Guard 阻止」(199)。
+   而 `[ -x ]` 检查完全测不出来 → 自检显示"CLI 就位"，下载链路却全断。
+   `scripts/qqbrowser_skill_cli.sh` 用受信任的 `python.exe` 直接驱动
+   `x5use.server:main`，参数与输出和 `.exe` 完全一致；`lib_platform.sh` 会自动选它。
+   另外 **`pymupdf` 必须装进同一个 venv**：年报内容校验找不到带 pymupdf 的解释器时会
+   按"宁缺毋滥"拒收，10 年 PDF 会整段入不了库。
 
    Windows 常只有 `python.exe` 没有 `python3`；`lib_platform.sh` 会自动把脚本里的 `python3` 调用转发过去，
    **不用手工建别名**。
+   `serve --daemon` 还有一道硬前置：**QQ 浏览器必须已安装**（CLI 自身检查，未装直接退出 1），
+   且静默安装需要**管理员权限**。装好浏览器后还需在
+   **WorkBuddy 设置 → 智能体 → 浏览器操控** 打开开关并安装对应扩展，否则 `Connected clients: 0`。
 
 4. **写凭证**：按本文步骤 5 写 `~/.config/lixinger-download/creds.json`（Git Bash 里即
    `C:/Users/<你>/.config/lixinger-download/creds.json`）。没有凭证就只能依赖浏览器残留登录态。

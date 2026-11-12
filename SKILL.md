@@ -28,9 +28,13 @@ agent_created: true
 > 本 skill 的所有流程与坑位均来自**真机实测**，且**只在 macOS + QQ 浏览器**上验证过
 > （长江电力单家跑通 + 17 家电力公司批量验证 + 国电电力 / 贵州茅台回归）。
 >
-> 🔴 **Windows 从未测试过**：代码里虽有平台适配层（`lib_platform.sh`），但**没有在 Windows 真机上跑过一次**，
-> 不保证能运行、也不清楚会遇到什么坑。想用 Windows 请照 `references/01-environment-setup.md` 第七节自行部署，
-> 出问题按 `references/03-troubleshooting.md` 排查，风险自负。
+> ✅ **v2.2-winfix（2026-11-12）**：已在 **Windows 11 + Git Bash** 真机完成部署、静态自检、
+> 环境自检、CLI 实调与两道验收脚本验证，并修复 5 处 Windows 兼容缺陷
+> （WDAC launcher 拦截 / venv `bin|Scripts` 路径 / pymupdf 解释器候选 / `--install` 静默失败 / 无浏览器时假成功空转）。
+> `scripts/lib_platform.sh` 会自动选用 `scripts/qqbrowser_skill_cli.sh` 调用 CLI。
+> 🔴 **仍待前置**：端到端真实下载需要 ①管理员权限安装 QQ 浏览器 ②WorkBuddy 设置→智能体→浏览器操控
+> 打开开关并装好扩展 ③守护进程 `Connected clients ≥ 1`。详见 `references/01-environment-setup.md` 第七节。
+> Linux 仍未测试。
 
 ## 触发场景
 

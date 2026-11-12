@@ -50,9 +50,22 @@ LOG="$LX_TMP/lx_acceptance_$(date +%Y%m%d_%H%M%S).log"
 STEP_OUT="$LX_TMP/.lx_accept_step.txt"
 PASS=0; FAIL=0
 
+# 🔴 Windows 专项：audit_annual_pdfs.py 依赖 pymupdf，venv 与全局 python3 是隔离的。
+#   原版写死全局 python3 → Windows 上即使 venv 装了 pymupdf，[6/7] 仍报
+#   "❌ 需要 pymupdf" 并 exit 2。改为优先挑【确实能 import pymupdf】的解释器。
+LX_AUDIT_PY="python3"
+for _c in "$LX_VENV/Scripts/python.exe" "$LX_VENV/Scripts/python" \
+          "$LX_VENV/bin/python3" "$LX_VENV/bin/python" python3; do
+  if { [ -x "$_c" ] || command -v "$_c" >/dev/null 2>&1; } \
+     && "$_c" -c 'import pymupdf' >/dev/null 2>&1; then
+    LX_AUDIT_PY="$_c"; break
+  fi
+done
+
 echo "=========================================="
 echo " Windows 真机验收 · $NAME ($MARKET$CODE)"
 echo " 平台: $LX_OS    Python: $LX_PY"
+echo " 验收解释器: $LX_AUDIT_PY"
 echo " 输出目录: $DEST"
 echo " 日志: $LOG"
 echo "=========================================="
@@ -98,16 +111,16 @@ step "[4/7] 端到端下载 $NAME 近 $YEARS 年（PDF + CSV）" \
 
 # ---- 5. CSV 单位量级核验 ----
 step "[5/7] CSV 单位核验" \
-  python3 "$SCRIPT_DIR/verify_csv_units.py" \
+  "$LX_AUDIT_PY" "$(lx_native_path "$SCRIPT_DIR/verify_csv_units.py")" \
     "$(lx_native_path "$DEST/$NAME/理杏仁财报/")"
 
 # ---- 6. 年报名副其实性审计 ----
 step "[6/7] 年报审计" \
-  python3 "$SCRIPT_DIR/audit_annual_pdfs.py" "$(lx_native_path "$DEST")"
+  "$LX_AUDIT_PY" "$(lx_native_path "$SCRIPT_DIR/audit_annual_pdfs.py")" "$(lx_native_path "$DEST")"
 
 # ---- 7. Python 盘真实落盘 ----
 echo "── [7/7] 真实落盘盘点"
-python3 - "$(lx_native_path "$DEST")" "$NAME" "$YEARS" <<'PY' > "$STEP_OUT" 2>&1
+"$LX_AUDIT_PY" - "$(lx_native_path "$DEST")" "$NAME" "$YEARS" <<'PY' > "$STEP_OUT" 2>&1
 import os, sys
 root, name, years = sys.argv[1], sys.argv[2], int(sys.argv[3])
 base = os.path.join(root, name)

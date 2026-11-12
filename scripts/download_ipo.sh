@@ -78,6 +78,8 @@ if [ ! -x "$CLI" ]; then
   echo "❌ 未找到 CLI: $CLI → 先运行 scripts/setup_env.sh --install"
   exit 1
 fi
+# 同 download_company.sh：浏览器链路不可用时快速失败
+lx_require_daemon "$CLI" || exit 1
 
 # 下载落地垃圾治理库（未确认*.crdownload 的隔离与同内容清理）
 # shellcheck source=lib_orphans.sh

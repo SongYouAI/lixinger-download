@@ -6,8 +6,11 @@
 
 > 本 Skill 的所有流程与坑位均来自**真机实测**（macOS + QQ 浏览器；长江电力单家跑通 + **17 家电力公司批量验证**），不是纸上方案。
 >
-> 🔴 **只在 macOS 上测过；Windows / Linux 从未在真机上跑过一次。** 代码里有平台适配层，但**不保证可用**。
-> Windows 部署步骤见 [`references/01-environment-setup.md`](references/01-environment-setup.md) 第七节，请自行验证、风险自负。
+> ✅ **v2.2-winfix（2026-11-12）**：Windows 11 + Git Bash 已完成真机部署与验证，修复 5 处 Windows 兼容缺陷
+> （详见交付的《Windows 验证与修复报告》）。静态自检、环境自检、CLI 实调、两道验收脚本均已跑通。
+> 🔴 **端到端真实下载仍待使用者侧前置**：需以管理员权限安装 QQ 浏览器、在 WorkBuddy
+> 设置→智能体→浏览器操控打开开关并装好扩展、确认 `Connected clients ≥ 1`。Linux 从未测试。
+> Windows 部署步骤见 [`references/01-environment-setup.md`](references/01-environment-setup.md) 第七节。
 
 ---
 

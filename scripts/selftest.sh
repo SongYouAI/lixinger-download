@@ -160,9 +160,20 @@ PY
 if [ -z "$CJK" ]; then ok "无变量边界陷阱（bash 3.2 变量紧跟中文）"
 else bad "存在变量边界陷阱:"; printf '%s\n' "$CJK" | sed 's/^/       /'; fi
 
-# ---- 9. 环境依赖（不判失败，只提示）----
-echo "[9/9] 环境依赖（提示项）"
-[ -x "$LX_CLI" ] && ok "CLI 就位: $LX_CLI" || warn "CLI 未安装: ${LX_CLI}（跑 bash scripts/setup_env.sh --install）"
+# ---- 9. 环境依赖 ----
+echo "[9/9] 环境依赖（CLI 可执行性 / 凭证 / 行尾 / Windows 专项）"
+# 🔴 Windows 专项（2026-11-12 真机）：原版只判 [ -x "$LX_CLI" ]。
+#   Windows 上 pip 生成的 .exe launcher 会被 WDAC / Device Guard 拒绝执行，
+#   但 -x 依然为真 → 静态自检"全绿"，下载链路却全部失败。必须真跑一次 version。
+if [ -x "$LX_CLI" ]; then
+  if "$LX_CLI" version >/dev/null 2>&1; then
+    ok "CLI 就位且可执行: $LX_CLI"
+  else
+    bad "CLI 存在但无法执行（Windows WDAC / Device Guard 拦截？）: $LX_CLI"
+  fi
+else
+  warn "CLI 未安装: ${LX_CLI}（跑 bash scripts/setup_env.sh --install）"
+fi
 [ -f "$LX_CREDS" ] && ok "凭证存在: $LX_CREDS" || warn "缺凭证: ${LX_CREDS}（见 references/01-environment-setup.md 步骤 5）"
 if [ -f "$ROOT/.gitattributes" ]; then
   if git -C "$ROOT" check-attr eol -- scripts/download_company.sh 2>/dev/null | grep -q 'eol: lf'; then
@@ -174,6 +185,28 @@ else
   bad "缺 .gitattributes（Windows CRLF 会让 bash 报 \$'\\r': command not found）"
 fi
 if [ "$LX_OS" = "windows" ]; then
+  # ① venv 必须是 Windows 结构（Scripts/，不是 bin/）
+  if [ -f "$LX_VENV/pyvenv.cfg" ]; then
+    if [ -x "$LX_VENV/Scripts/python.exe" ]; then ok "Windows venv 结构正确（Scripts/python.exe）"
+    else bad "venv 存在但缺 Scripts/python.exe（结构不是 Windows venv）"; fi
+  else
+    warn "venv 未创建: ${LX_VENV}（跑 bash scripts/setup_env.sh --install）"
+  fi
+  # ② pymupdf：年报内容校验的硬依赖，缺了会【拒收全部年报 PDF】
+  _wpy=""
+  for _c in "$LX_VENV/Scripts/python.exe" "$LX_VENV/Scripts/python" \
+            "$LX_VENV/bin/python3" python3; do
+    if { [ -x "$_c" ] || command -v "$_c" >/dev/null 2>&1; } \
+       && "$_c" -c 'import pymupdf' >/dev/null 2>&1; then _wpy="$_c"; break; fi
+  done
+  [ -n "$_wpy" ] && ok "pymupdf 可用（年报内容校验依赖）: $_wpy" \
+    || warn "缺 pymupdf → 年报 PDF 会被内容校验拒收；装: \"$LX_VENV/Scripts/python.exe\" -m pip install pymupdf"
+  # ③ CLI wrapper：WDAC 环境下绕过未签名 launcher 的唯一通道
+  if [ -f "$SCRIPT_DIR/qqbrowser_skill_cli.sh" ]; then
+    ok "CLI wrapper 存在（Windows WDAC 兼容层）"
+  else
+    warn "缺 CLI wrapper: scripts/qqbrowser_skill_cli.sh（WDAC 环境下 CLI 会不可用）"
+  fi
   for d in "$LX_BROWSER_DATA/Google/Chrome/User Data" "$LX_BROWSER_DATA/Microsoft/Edge/User Data"; do
     [ -d "$d" ] && ok "浏览器配置目录: $d" || warn "未找到（浏览器可能没装/没启动过）: $d"
   done

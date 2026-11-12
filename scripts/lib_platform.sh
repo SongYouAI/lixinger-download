@@ -41,18 +41,46 @@ else
 fi
 LX_VENV="${LIXINGER_VENV:-$LX_HOME/.workbuddy/binaries/python/envs/qqbrowser-ctl}"
 
-# CLI / pip 用「存在性探测」而非 OS 硬分派：WSL 里跑 Linux venv 时仍走 bin/
-if [ -x "$LX_VENV/Scripts/qqbrowser-skill.exe" ]; then
+# ---- CLI 探测 ----
+# 🔴 Windows 专项（2026-11-12 真机实测）：
+#   pip 生成的 $VENV/Scripts/qqbrowser-skill.exe 是【未签名】setuptools launcher，
+#   启用 WDAC / Device Guard 的 Windows 会直接拒绝执行：
+#     Git Bash → "Permission denied"(126)；cmd.exe → "已被组织 Device Guard 阻止"(199)。
+#   原代码只会判断 -x（文件存在且可执行位为真），完全测不出这种"系统策略拦截"，
+#   于是自检显示 CLI 就位，但所有 browser_* 调用全部失败。
+#   解法：Windows 上优先用同目录 wrapper，以受信任的 python.exe 驱动 x5use.server:main。
+#   仅当 venv 里确实装了 x5use 时才启用，避免"CLI 未安装却显示就位"。
+_LX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_LX_WRAPPER="$_LX_SCRIPT_DIR/qqbrowser_skill_cli.sh"
+_LX_WIN_PY=""
+for _c in "$LX_VENV/Scripts/python.exe" "$LX_VENV/Scripts/python"; do
+  [ -x "$_c" ] && { _LX_WIN_PY="$_c"; break; }
+done
+
+if [ "$LX_OS" = "windows" ] && [ -f "$_LX_WRAPPER" ] && [ -n "$_LX_WIN_PY" ] \
+   && "$_LX_WIN_PY" -c 'import x5use.server' >/dev/null 2>&1; then
+  chmod +x "$_LX_WRAPPER" 2>/dev/null || true
+  LX_CLI="$_LX_WRAPPER"
+elif [ -x "$LX_VENV/Scripts/qqbrowser-skill.exe" ]; then
   LX_CLI="$LX_VENV/Scripts/qqbrowser-skill.exe"
 elif [ -x "$LX_VENV/Scripts/qqbrowser-skill" ]; then
   LX_CLI="$LX_VENV/Scripts/qqbrowser-skill"
+elif [ "$LX_OS" = "windows" ]; then
+  # Windows venv 永远不会有 bin/；给一个"预期路径"便于诊断，而不是误导性的 bin/
+  LX_CLI="$LX_VENV/Scripts/qqbrowser-skill.exe"
 else
   LX_CLI="$LX_VENV/bin/qqbrowser-skill"
 fi
+
+# ---- pip 探测 ----
+# 原代码在 venv 尚未创建时一律回落到 bin/pip，导致 setup_env.sh --install
+# 在 Windows 上拿着 bin/pip 去装包 → "No such file or directory" 且静默失败。
 if [ -x "$LX_VENV/Scripts/pip.exe" ]; then
   LX_PIP="$LX_VENV/Scripts/pip.exe"
 elif [ -x "$LX_VENV/Scripts/pip" ]; then
   LX_PIP="$LX_VENV/Scripts/pip"
+elif [ "$LX_OS" = "windows" ]; then
+  LX_PIP="$LX_VENV/Scripts/pip.exe"
 else
   LX_PIP="$LX_VENV/bin/pip"
 fi
@@ -137,3 +165,27 @@ lx_native_path() {
 
 export LX_OS LX_VENV LX_CLI LX_PIP LX_TMP LX_HOME LX_DOWNLOADS LX_CREDS \
        LX_BROWSER_DATA LX_CACHE LX_PY IS_MAC
+
+# 🔴 Windows 专项（2026-11-12 真机实测）：浏览器链路完全不可用时，主脚本仍会
+#   ① 把 browser_start_session 的失败吞进 /dev/null 并打印「✅ 会话已开启」；
+#   ② 继续跑完 CSV/PDF 全流程，空转数分钟，最后 0 文件落盘。
+#   提供统一前置守卫：确认守护进程在跑、且浏览器确实连上，否则立即明确失败。
+#   只在输出【明确出现】"Connected clients: 0" 时才判连接失败，
+#   字段不存在的旧版 CLI / macOS 不受影响。LX_SKIP_DAEMON_CHECK=1 可跳过（离线调试用）。
+lx_require_daemon() {
+  local cli="${1:-$LX_CLI}" st
+  [ "${LX_SKIP_DAEMON_CHECK:-0}" = "1" ] && return 0
+  [ -x "$cli" ] || { echo "❌ 浏览器 CLI 不可用: ${cli}" >&2; return 1; }
+  st="$("$cli" status 2>/dev/null)"
+  if ! printf '%s' "$st" | grep -q "Daemon is running"; then
+    echo "❌ 浏览器守护进程未运行 → 先执行: bash scripts/setup_env.sh --install" >&2
+    echo "   （当前 CLI: ${cli}）" >&2
+    return 1
+  fi
+  if printf '%s' "$st" | grep -qE "Connected clients: *0"; then
+    echo "❌ 守护进程已起但浏览器未连接（Connected clients: 0）" >&2
+    echo "   → WorkBuddy 设置→智能体→浏览器操控 开启开关并装好扩展，然后完全退出并重启浏览器" >&2
+    return 1
+  fi
+  return 0
+}

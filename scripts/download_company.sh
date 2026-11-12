@@ -74,6 +74,8 @@ if [ ! -x "$CLI" ]; then
   echo "❌ 未找到 CLI: $CLI → 先运行 scripts/setup_env.sh --install"
   exit 1
 fi
+# 浏览器链路不可用时快速失败，避免空转数分钟还打印「✅ 会话已开启」（Windows 实测）
+lx_require_daemon "$CLI" || exit 1
 
 # ---------- 日期范围（跨平台）----------
 if [ "$LX_OS" = "mac" ]; then
@@ -156,7 +158,11 @@ annual_content_ok() {  # $1=pdf路径 $2=年份
   # ⚠️ 教训(2026-09-20): 旧版按路径存在就选，结果选中了无 pymupdf 的解释器 →
   #    函数走"缺工具则放行"分支 → 所有错件都被判合格，防线形同虚设。
   local cands c
-  cands=("${LIXINGER_PY:-}" "$VENV/bin/python3" "$VENV/bin/python" python3)
+  # 🔴 Windows 专项：Windows venv 的解释器在 Scripts/python.exe，不在 bin/。
+  #   原候选表漏了它 → 找不到带 pymupdf 的解释器 → annual_content_ok 按"宁缺毋滥"
+  #   直接拒收，10 年 PDF 会整段入不了库（且不报错，只显示"归档失败"）。
+  cands=("${LIXINGER_PY:-}" "$VENV/Scripts/python.exe" "$VENV/Scripts/python" \
+         "$VENV/bin/python3" "$VENV/bin/python" "${LX_PY:-python3}" python3)
   for c in "${cands[@]}"; do
     [ -z "$c" ] && continue
     if { [ -x "$c" ] || command -v "$c" >/dev/null 2>&1; } && "$c" -c 'import pymupdf' >/dev/null 2>&1; then
